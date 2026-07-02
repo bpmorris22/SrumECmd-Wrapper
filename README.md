@@ -4,6 +4,10 @@ A single-file, double-clickable GUI for triaging the **Windows System Resource U
 
 No install, no dependencies, no framework: one `.hta` file that runs on any Windows box via the built-in `mshta.exe`. Point it at a collected `SRUDB.dat` (or a KAPE / Velociraptor collection tree), and it runs SrumECmd for you and turns the multi-CSV output into an interactive, suspicion-scored triage view.
 
+![Control panel](images/control-panel.jpg)
+
+![Analysis view](images/analysis-view.jpg)
+
 ## Why SRUM
 
 SRUM is the only native Windows artifact that **quantifies per-application network volume** — bytes sent and received, bucketed roughly hourly, retained for ~30–60 days. That makes it uniquely valuable for two DFIR questions prefetch and the event logs cannot answer:
