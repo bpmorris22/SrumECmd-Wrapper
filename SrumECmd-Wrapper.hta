@@ -1,0 +1,1513 @@
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="x-ua-compatible" content="IE=edge">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>SrumECmd Wrapper</title>
+<HTA:APPLICATION
+  ID="srumHta"
+  APPLICATIONNAME="SrumECmd Wrapper"
+  BORDER="thick"
+  CAPTION="yes"
+  SCROLL="auto"
+  SINGLEINSTANCE="yes"
+  SHOWINTASKBAR="yes"
+  MAXIMIZEBUTTON="yes"
+  MINIMIZEBUTTON="yes"
+  INNERBORDER="no"
+  CONTEXTMENU="yes"
+  SELECTION="yes" />
+<!--
+  SrumECmd CSV contract, VERIFIED 2026-07-02 against SrumECmd 0.5.1.0 output (spec §2.2):
+
+  Output files: <yyyyMMddHHmmss>_SrumECmd_<Table>_Output.csv — 7 tables in v0.5.1
+  (NetworkUsages, AppResourceUseInfo, AppTimelineProvider, NetworkConnections,
+   vfuprov, PushNotifications, EnergyUsage). Discover by glob, never hardcode.
+
+  Common column prefix on every table:
+    Id,Timestamp,ExeInfo,ExeInfoDescription,ExeTimestamp,SidType,Sid,UserName,UserId,AppId
+  (vfuprov orders UserId/AppId before ExeInfo — always resolve columns by header name.)
+
+  Data quirks (spec §2.3):
+  - ExeInfo is NOT always a path: device paths (\device\harddiskvolumeN\..., lowercase),
+    bare names (svchost.exe), UWP package ids, service blobs (svc.ownproc...), tokens, empty.
+  - Timestamp = HOURLY FLUSH BUCKET (UTC), not event time; event may predate it by up to ~1h;
+    the final unflushed hour is lost on hard power-off.
+  - ExeTimestamp arrives as "MM/dd/yyyy HH:mm:ss +00:00" and is frequently 1979-garbage —
+    display only, never sort/filter on it.
+  - CLI: -f SRUDB.dat / -r SOFTWARE (optional) / -d recursive / - -csv required. No -q/--vss/--dedupe.
+  - SrumECmd parses via the LOCAL Windows ESE engine, so ESE failures come in three flavors
+    (all verified 2026-07-02 on real collections):
+      1. EsentBadLogVersionException — the collected .log files were written by a newer ESE than
+         this box; DB itself is often Clean Shutdown. Fix: process a copy of SRUDB.dat ALONE.
+      2. Dirty shutdown — classic raw-copy state. Fix: esentutl /p on a copy.
+      3. EsentInvalidDatabaseVersionException / JET_errInvalidDatabaseVersion — the DB FORMAT
+         ('attached by' efv in esentutl /mh) is newer than this box's engine (efvCurrent).
+         NOT fixable locally (esentutl fails with -1209 too): parse on a Windows build >= the
+         source host, or use Velociraptor's Windows.Forensics.SRUM artifact.
+    The wrapper auto-offers a repair-on-copy for 1/2 (copy .dat alone + esentutl /p /o, verified
+    silent & non-interactive) and explains 3 honestly.
+  - SrumECmd 2026.x --version prints "2026.5.0+<git hash>" (0.5.x printed bare "0.5.1.0").
+  - Live C:\Windows\System32\sru\SRUDB.dat is locked by the SRUM service - collect first.
+-->
+<style>
+  html{margin:0;height:100%;background:#0d1117}
+  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px;zoom:0.9}
+  a{color:#58a6ff}
+  .mono{font-family:Consolas,"Courier New",monospace}
+  .muted{color:#8b949e}
+  .err{color:#f85149}
+  .ok{color:#3fb950}
+  header{padding:8px 14px;background:#161b22;border-bottom:1px solid #30363d}
+  header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
+  header h1 small{color:#8b949e;font-weight:400}
+  .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .wrap{padding:12px 14px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
+  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
+  input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
+  input.wide{width:62%}
+  .btn{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;margin:2px}
+  .btn:hover{border-color:#58a6ff}
+  .btn.primary{background:#1f6feb;border-color:#1f6feb}
+  .btn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  .row{white-space:nowrap}
+  .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top}
+  .stat .n{font-size:17px;font-weight:700;display:block}
+  .stat .l{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
+  th:hover{color:#58a6ff}
+  td{max-width:360px}
+  tr.sus td{background:#2a1416}
+  tr.sus td.first{border-left:3px solid #ff6b6b}
+  .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;margin-right:3px}
+  .tag.sus{background:#3a1416;color:#ff6b6b}
+  .tag.usr{background:#3a2d10;color:#d29922}
+  .tag.lol{background:#10263f;color:#58a6ff}
+  .tag.rare{background:#241a3a;color:#b083f0}
+  .tag.ioc{background:#3a1416;color:#ff6b6b;border:1px solid #ff6b6b}
+  .tag.sys{background:#4a1a10;color:#ff9b6b}
+  .tag.vol{background:#0d2b30;color:#39c5cf}
+  .tag.gen{background:#21262d;color:#8b949e}
+  tr.sel td{background:#1c2f4a}
+  .cards3{width:100%}
+  .col3{display:inline-block;width:32%;vertical-align:top;margin-right:1%}
+  .brow{white-space:nowrap;margin:3px 0}
+  .blab{display:inline-block;width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;font-family:Consolas,monospace;font-size:11px}
+  .blab.lnk{cursor:pointer;color:#58a6ff}
+  .blab.lnk:hover{text-decoration:underline}
+  .btrack{display:inline-block;width:30%;height:12px;background:#1c2330;border-radius:3px;overflow:hidden;vertical-align:middle}
+  .bfill{display:block;height:100%;background:#1f6feb}
+  .bfill.warn{background:#f85149}
+  .bval{display:inline-block;width:20%;text-align:right;font-size:11px;color:#8b949e;vertical-align:middle}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:220px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:nowrap}
+  .dl div{overflow:hidden;text-overflow:ellipsis}
+  .hl-user{color:#d29922}
+  .hl-ioc{color:#ff6b6b;font-weight:700}
+  .scroll{max-height:56vh;overflow:auto;border:1px solid #30363d;border-radius:8px}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px}
+  .hide{display:none}
+  .lnk{cursor:pointer;color:#58a6ff}
+  .lnk:hover{text-decoration:underline}
+  .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<header>
+  <h1>SrumECmd Wrapper <small>&mdash; DFIR SRUM triage <span id="appver"></span></small></h1>
+  <span class="pill" id="verpill">version: checking&hellip;</span>
+  <span class="pill" id="srcpill">no data loaded</span>
+  <span style="float:right">
+    <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
+    <button class="btn" id="fup" title="Larger text">A+</button>
+  </span>
+</header>
+
+<div class="wrap">
+
+  <!-- CONTROL PANEL -->
+  <div class="card">
+    <h3>SrumECmd control panel</h3>
+    <div class="muted" id="exeline" style="font-size:11px;margin-bottom:6px"></div>
+    <label class="fld">SRUM to process
+      &mdash; <select id="inMode" title="Directory = recurse a folder (SrumECmd -d) and locate SRUDB.dat AND the SOFTWARE hive automatically (KAPE/Velociraptor collection trees work as-is). Single file = process one SRUDB.dat (SrumECmd -f) with an optional SOFTWARE hive.">
+        <option value="d">directory (recursive &mdash; finds SRUDB.dat + SOFTWARE)</option><option value="f">single SRUDB.dat file</option></select>
+      &nbsp;<label style="font-size:12px" title="--debug: verbose SrumECmd output in the run log. Useful when a parse fails.">
+        <input type="checkbox" id="optDebug"> debug output</label>
+    </label>
+    <input class="txt wide" id="inPath" value="" placeholder="collection tree root, or SRUDB.dat in single-file mode">
+    <input type="file" id="inPick" style="display:none">
+    <button class="btn" id="browseBtn">Browse&hellip;</button>
+    <div id="hiveRow" class="hide">
+      <label class="fld">SOFTWARE hive (-r) &mdash; optional but recommended: resolves network profile names and related lookups. Leave empty to skip.</label>
+      <input class="txt wide" id="hivePath" value="" placeholder="path to SOFTWARE hive (optional)">
+      <input type="file" id="hivePick" style="display:none">
+      <button class="btn" id="hiveBtn">Browse&hellip;</button>
+    </div>
+    <label class="fld">CSV output directory</label>
+    <input class="txt wide" id="outDir" value="">
+    <button class="btn" id="openDirBtn">Open folder</button>
+    <div style="margin-top:10px">
+      <button class="btn" id="verBtn">Check version</button>
+      <button class="btn" id="updBtn">Update / download SrumECmd</button>
+      <span class="sep"></span>
+      <button class="btn primary" id="procBtn">Process &rarr; analyze</button>
+      <button class="btn" id="loadBtn">Load existing CSV&hellip;</button>
+      <input type="file" id="csvPick" style="display:none">
+      <span class="sep"></span>
+      <button class="btn" id="logToggle">Show log</button>
+      <span class="muted" id="status" style="margin-left:8px"></span>
+    </div>
+    <div style="margin-top:8px" id="producedRow" class="hide">
+      <label class="fld">Produced CSVs &mdash; pick one to view</label>
+      <select id="producedSel" style="min-width:70%"></select>
+      <button class="btn" id="loadSelBtn">Load selected</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hide">
+    <div class="card">
+      <h3 id="ovTitle">Overview</h3>
+      <div id="statbar"></div>
+    </div>
+
+    <div class="card cards3 hide" id="ovCards">
+      <div class="col3"><h3>Top talkers (bytes sent)</h3><div id="topSent"></div></div>
+      <div class="col3"><h3>Suspicious (score-ranked)</h3><div id="topSus"></div></div>
+      <div class="col3"><h3>SYSTEM network activity</h3><div id="topSys"></div></div>
+    </div>
+
+    <div class="card">
+      <h3 id="tableTitle">Records</h3>
+      <div class="row" id="tabbar" style="margin-bottom:8px"></div>
+      <div class="row" id="cats" style="margin-bottom:8px">
+        <button class="btn on" data-cat="all">All</button>
+        <button class="btn" data-cat="sus" title="Heuristic score &ge; 2">Suspicious</button>
+        <button class="btn" data-cat="system" title="S-1-5-18 / systemprofile rows — where boot-service RATs live">SYSTEM</button>
+        <button class="btn" data-cat="userpath" title="Executable runs from a user-writable path">User-path</button>
+        <button class="btn" data-cat="lolbin" title="Dual-use binary (node, java, powershell, curl, mshta, ...)">LOLBIN</button>
+        <button class="btn" data-cat="vol" title="Aggregate BytesSent over the volume thresholds">High-volume</button>
+        <button class="btn" data-cat="ioc" title="IOC / keyword list hit">IOC hits</button>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <input class="txt" id="q" placeholder="search all columns&hellip;" style="width:280px">
+        <span class="sep"></span>
+        <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:140px" title="Filter by the Timestamp column (UTC) — applies to every tab; summary tabs re-aggregate to the window">
+        <span class="muted">&rarr;</span>
+        <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:140px" title="Filter by the Timestamp column (UTC) — applies to every tab; summary tabs re-aggregate to the window">
+        <span class="sep"></span>
+        <button class="btn" id="iocBtn">IOC / keywords&hellip;</button>
+        <button class="btn" id="clearBtn">clear</button>
+        <button class="btn" id="exportBtn">Export view &rarr; CSV</button>
+        <button class="btn" id="copyBtn">Copy for case notes</button>
+        <span class="muted" id="count" style="margin-left:8px"></span>
+      </div>
+      <div id="iocWrap" class="hide" style="margin-bottom:8px">
+        <label class="fld">IOC / keyword list — comma or newline separated; matched (case-insensitive substring) against executable path, SID, user, interfaces and network profile names of every aggregate. Matches score +3 and rescore live; raw rows inherit their aggregate's tags.</label>
+        <textarea id="iocBox" rows="3" style="width:70%;vertical-align:top"></textarea>
+        <button class="btn" id="iocApply">Apply</button>
+        <button class="btn" id="iocLoad">Load file&hellip;</button>
+        <input type="file" id="iocPick" style="display:none">
+        <span class="muted" id="iocInfo" style="font-size:11px"></span>
+      </div>
+      <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
+      <div class="card hide" id="detailCard" style="margin-top:12px">
+        <h3>Aggregate detail <span class="lnk" id="detClose" style="float:right;margin-left:12px">close &times;</span><span class="lnk" id="detHourly" style="float:right;margin-left:12px">export hourly &rarr; CSV</span><span class="lnk" id="detCopy" style="float:right">copy record</span></h3>
+        <div id="detBody"></div>
+      </div>
+      <div class="muted" id="foot" style="font-size:11px;margin-top:6px">Click any row for aggregate detail (hourly activity, cross-table presence); overview entries are clickable too. One tab per SRUM table plus per-executable summary tabs; tables parse on first open (search, categories and date filter are global across tabs; summary tabs re-aggregate to the date window). Suspicious rows are shaded (heuristic score &ge; 2: user-path, LOLBIN, masquerade, SYSTEM-from-user-path network, volume/upload anomalies, IOC hits). All timestamps UTC as SrumECmd emits them; the Timestamp column is an <b>hourly flush bucket</b> &mdash; events may predate it by up to ~1&nbsp;hour and the final unflushed hour is lost on hard power-off. Max 6000 rows shown; export writes the full filtered set.</div>
+    </div>
+  </div>
+
+</div>
+
+<script language="JScript">
+"use strict";
+
+var APP_VERSION = "1.0.0";
+var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
+var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
+var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
+var LIVE_SRU = "c:\\windows\\system32\\sru";                                        // locked by the SRUM service on a live box
+var EXE = "";
+var EXE_DIR = "";
+var LOCAL_VER = "";
+var LATEST_VER = "";
+var WEB_OK = false;                  // could we reach the Zimmerman Tools site to check latest?
+var QUERY = "";
+var MAXROWS = 6000;
+var LASTOUTDIR = "";
+var qTimer = null;
+var TABS = [];                       // per tab: kind "csv" {name,path,size,state,head,rows,blobs,days,keys,...} or "agg" {name,srcName,isNet,rows:[objects],...}
+var CURTAB = -1;                     // index into TABS of the visible tab
+var DFROM = 0, DTO = 0;              // UTC date-range filter (yyyymmdd ints, 0 = unset)
+var CURCAT = "all";                  // active category filter
+var IOCS = [];                       // lowercased IOC / keyword terms
+var SCOREMAP = {};                   // "exeL|sid" -> {tags,reasons,score,sus} (union of both aggregate sets)
+var SCOREN = 0;                      // entries in SCOREMAP (0 = scoring not built yet)
+var AGGOBJ = {};                     // "exeL|sid" -> {net:<Network Summary row>, app:<App Resource row>}
+var DETKEY = null;                   // aggregate key currently shown in the detail pane
+var AGGWIN = "?";                    // date window the aggregates were built for ("DFROM|DTO")
+var PENDNOTE = "";                   // note appended to the next "Loaded N rows" status (e.g. missing-hive warning)
+var BUSY = false;                    // a SrumECmd run is in progress
+var PRODUCED = [];                   // CSVs produced by the last run
+
+/* suspicion knobs (spec §6.3; path heuristics inherited from PECmd-Wrapper, tuned on real incidents) */
+var USERPATHS = ["\\users\\","\\appdata\\","\\temp\\","\\downloads\\","\\programdata\\","\\perflogs\\","\\windows\\temp\\","\\$recycle.bin\\","\\public\\"];
+var LOLBINS = {powershell:1,powershell_ise:1,pwsh:1,cmd:1,wscript:1,cscript:1,mshta:1,rundll32:1,regsvr32:1,certutil:1,certreq:1,
+  bitsadmin:1,msiexec:1,curl:1,wget:1,node:1,java:1,javaw:1,python:1,pythonw:1,php:1,autoit3:1,nc:1,ncat:1,psexec:1,psexesvc:1,
+  wmic:1,schtasks:1,reg:1,sc:1};
+var OSNAMES = {svchost:1,lsass:1,csrss:1,services:1,winlogon:1,explorer:1,taskhostw:1,dllhost:1,conhost:1,smss:1,wininit:1};
+var UPLOAD_ALLOW = {onedrive:1,dropbox:1,googledrivesync:1,googledrivefs:1,veeam:1,acronis:1,carbonite:1,crashplan:1,
+  msmpeng:1,mssense:1,senseir:1,teams:1,"ms-teams":1,zoom:1,webex:1,skype:1,backgroundtaskhost:1};   // upload-heavy by design
+var RECENT_DAYS = 14;
+var VOL_T1 = 100*1024*1024;          // >= 100 MB sent  -> VOL +1
+var VOL_T2 = 1024*1024*1024;         // >= 1 GB sent    -> VOL +2
+var UPLOAD_MIN = 10*1024*1024;       // UPLOAD needs >= 10 MB sent...
+var UPLOAD_RATIO = 3;                // ...and sent >= 3x received
+
+/* friendly labels for the produced-CSV picker (spec §2.2); unknown tables still list fine */
+var TABLE_INFO = {
+  networkusages:       "per-app network bytes per hour — exfil hunting",
+  appresourceuseinfo:  "per-app CPU / disk I/O — execution evidence",
+  apptimelineprovider: "app session durations",
+  networkconnections:  "network / Wi-Fi profile history",
+  vfuprov:             "per-user foreground app sessions",
+  pushnotifications:   "push notification records",
+  energyusage:         "battery / energy telemetry"
+};
+function tableNameOf(csvName){
+  var m=String(csvName).match(/_SrumECmd_(.+)_Output\.csv$/i);
+  return m?m[1]:"";
+}
+
+/* ---------- tiny helpers ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ if(s==null) return ""; s=String(s);
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function nf(n){ n=String(n); var dot=n.indexOf("."); var dec=""; if(dot>=0){ dec=n.substring(dot); n=n.substring(0,dot); }
+  var r="",c=0; for(var k=n.length-1;k>=0;k--){ r=n.charAt(k)+r; c++; if(c%3===0&&k>0) r=","+r; } return r+dec; }
+function setStatus(msg,cls){ var el=$("status"); el.innerHTML=esc(msg); el.className=cls||"muted"; }
+function appendLog(t){ var el=$("log"); if(el.getAttribute("data-ph")==="1"){ el.innerHTML=""; el.setAttribute("data-ph","0"); }
+  el.style.display="block"; $("logToggle").innerHTML="Hide log"; el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
+function trimStr(s){ return String(s).replace(/^\s+|\s+$/g,""); }
+function baseName(p){ if(!p) return ""; p=String(p); var i=Math.max(p.lastIndexOf("\\"),p.lastIndexOf("/")); return i>=0?p.substring(i+1):p; }
+function showEl(id,vis){ var e=$(id); if(!e) return; var c=e.className.replace(/\s*\bhide\b/g,"");
+  e.className = vis ? c : (c+" hide"); }
+function shortPathN(p,n){ p=String(p); var parts=p.split("\\"); if(parts.length<=n) return p; return "…\\"+parts.slice(parts.length-n).join("\\"); }
+
+/* ---------- file IO via ActiveX (UTF-8 safe, with network-zone fallback) ----------
+   ADODB.Stream is the proper UTF-8 reader, but when the .hta runs from a NETWORK location
+   (mapped drive / UNC share) mshta assigns it the intranet/internet zone and ADODB refuses
+   every LoadFromFile/SaveToFile with "Safety settings on this computer prohibit accessing a
+   data source on another domain" — regardless of where the target file lives. Seen in the
+   field 2026-07-02 (app run from Z:\ on an analysis VM). FSO is not zone-checked, so we fall
+   back to ANSI file IO: CSV structure is unaffected (all-ASCII), only rare non-ASCII chars
+   (accented usernames, Wi-Fi profile names) display mojibake'd. Best fidelity = run locally. */
+var FILE_IO="adodb";                 // flips to "fso" permanently on the first zone-policy block
+function zoneNote(){
+  appendLog("NOTE: this app is running from a network location, so Windows zone policy blocks the UTF-8 file reader (ADODB.Stream). Falling back to ANSI file IO — everything works, but non-ASCII characters (accented usernames, Wi-Fi profile names) may display incorrectly. For full fidelity copy this folder to a LOCAL path (e.g. C:\\Tools\\SrumECmd) and run it from there.");
+}
+function readUtf8(path){
+  if(FILE_IO==="adodb"){
+    try{
+      // ReadText(-1) on a large file is quadratic in MSHTML (30s for 16MB); read in 64KB chunks (~0.1s).
+      var st=new ActiveXObject("ADODB.Stream");
+      st.Type=2; st.Charset="utf-8"; st.Open(); st.LoadFromFile(path);
+      var parts=[]; while(!st.EOS){ parts.push(st.ReadText(65536)); } st.Close();
+      return parts.join("");
+    }catch(e){
+      if(!/safety settings|data source/i.test(e.message||"")) throw e;   // real IO errors propagate
+      FILE_IO="fso"; zoneNote();
+    }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.OpenTextFile(path,1,false,0), out=f.ReadAll(); f.Close();
+  // a UTF-8 BOM read as ANSI shows up as three cp1252 chars — strip it
+  if(out.length>=3 && out.charCodeAt(0)===239 && out.charCodeAt(1)===187 && out.charCodeAt(2)===191) out=out.substring(3);
+  return out;
+}
+function writeUtf8(path,text){
+  if(FILE_IO==="adodb"){
+    try{
+      var st=new ActiveXObject("ADODB.Stream");
+      st.Type=2; st.Charset="utf-8"; st.Open(); st.WriteText(text); st.SaveToFile(path,2); st.Close();
+      return;
+    }catch(e){
+      if(!/safety settings|data source/i.test(e.message||"")) throw e;
+      FILE_IO="fso"; zoneNote();
+    }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close();
+}
+function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
+/* cmd expands %N / %VAR% inside .bat lines even within quotes — Velociraptor trees contain literal % (C%3A) */
+function batEsc(s){ return String(s).replace(/%/g,"%%"); }
+
+/* Run a batch script, wait, return {rc, log}. show=true → visible console window. */
+function runBat(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"";
+  var stamp=uid();
+  var bat=tmp+"\\srumecmd_"+stamp+".bat";
+  var logp=tmp+"\\srumecmd_"+stamp+".log";
+  var f=fso.CreateTextFile(bat,true);
+  f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.Close();
+  var rc=sh.Run('cmd /c ""'+bat+'""', show?1:0, true);
+  var txt="";
+  try{ if(fso.FileExists(logp)) txt=readUtf8(logp); }catch(e){ txt="(could not read log: "+e.message+")"; }
+  try{ fso.DeleteFile(bat); }catch(e2){}
+  try{ if(fso.FileExists(logp)) fso.DeleteFile(logp); }catch(e3){}
+  return { rc:rc, log:txt };
+}
+
+/* Run a batch NON-blocking; writes a .done marker when finished. Caller polls with pollDone().
+   This keeps the HTA script responsive (no MSHTML long-running-script watchdog). */
+function runBatAsync(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"";
+  var stamp=uid();
+  var bat=tmp+"\\srumecmd_"+stamp+".bat";
+  var logp=tmp+"\\srumecmd_"+stamp+".log";
+  var donep=tmp+"\\srumecmd_"+stamp+".done";
+  var f=fso.CreateTextFile(bat,true);
+  f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.WriteLine('echo done> "'+donep+'"');   // marker written after everything above completes
+  f.Close();
+  sh.Run('cmd /c ""'+bat+'""', show?1:0, false);   // false = do NOT block the script
+  return { bat:bat, log:logp, done:donep, elapsed:0 };
+}
+function pollDone(ctx){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(fso.FileExists(ctx.done)){
+    var log=""; try{ if(fso.FileExists(ctx.log)) log=readUtf8(ctx.log); }catch(e){ log="(could not read log: "+e.message+")"; }
+    try{ fso.DeleteFile(ctx.bat); }catch(e1){}
+    try{ fso.DeleteFile(ctx.done); }catch(e2){}
+    try{ if(fso.FileExists(ctx.log)) fso.DeleteFile(ctx.log); }catch(e3){}
+    ctx.onDone(log);
+    return;
+  }
+  ctx.elapsed+=1;
+  if(ctx.elapsed>1800){ ctx.onTimeout&&ctx.onTimeout(); return; }   // 30-min safety cap
+  if(ctx.onTick) ctx.onTick(ctx.elapsed);
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+
+/* ---------- tooling: locate / version / download ---------- */
+/* native folder-tree picker (Shell.Application) — an <input type=file> can only select files,
+   so directory mode needs this to let the analyst point straight at a folder like …\System32 */
+function pickFolder(title){
+  try{
+    var sh=new ActiveXObject("Shell.Application");
+    var f=sh.BrowseForFolder(0, title||"Select folder", 0x11);   // 0x1 RETURNONLYFSDIRS | 0x10 EDITBOX
+    if(f && f.Self && f.Self.Path) return f.Self.Path+"";
+  }catch(e){ setStatus("Folder picker unavailable ("+e.message+") — type or paste the path instead","err"); }
+  return "";
+}
+function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
+function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FolderExists(p); }catch(e){ return false; } }
+function parentDir(p){ var i=String(p).lastIndexOf("\\"); return i>=0?p.substring(0,i):p; }
+function htaFolder(){
+  try{ var cl=srumHta.commandLine+""; var m=cl.match(/"([^"]+\.hta)"/i); if(!m) m=cl.match(/([A-Za-z]:\\[^"]+\.hta)/i);
+    if(m) return parentDir(m[1]); }catch(e){}
+  try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); return parentDir(p); }catch(e2){}
+  return "";
+}
+function resolveExe(){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var dir=htaFolder(), cands=[];
+  if(dir) cands.push(dir+"\\SrumECmd.exe");
+  cands.push("C:\\ZimmermanTools\\net6\\SrumECmd.exe");   // prefer net6/net9 builds
+  cands.push("C:\\ZimmermanTools\\SrumECmd.exe");
+  for(var i=0;i<cands.length;i++){ if(fso.FileExists(cands[i])){ EXE=cands[i]; EXE_DIR=parentDir(cands[i]); return true; } }
+  EXE=""; EXE_DIR=dir||""; return false;
+}
+function checkDeps(){
+  // framework-dependent builds ship SrumECmd.dll + runtimeconfig next to the exe
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); var miss=[];
+  if(!EXE_DIR) return ["(install folder unknown)"];
+  if(fso.FileExists(EXE_DIR+"\\SrumECmd.runtimeconfig.json") && !fso.FileExists(EXE_DIR+"\\SrumECmd.dll")) miss.push("SrumECmd.dll");
+  return miss;
+}
+function verTuple(v){ var p=String(v).split("."); var a=[]; for(var i=0;i<p.length;i++) a.push(parseInt(p[i],10)||0); return a; }
+function verCmp(a,b){ a=verTuple(a); b=verTuple(b); var n=Math.max(a.length,b.length);
+  for(var i=0;i<n;i++){ var x=a[i]||0,y=b[i]||0; if(x!==y) return x<y?-1:1; } return 0; }
+function fetchLatest(){
+  LATEST_VER=KNOWN_LATEST_SRUM; WEB_OK=false;
+  try{
+    var x=new ActiveXObject("MSXML2.ServerXMLHTTP.6.0");
+    x.setTimeouts(2000,3000,4000,4000);
+    x.open("GET", EZ_PAGE, false); x.send();
+    if(x.status===200){ WEB_OK=true; var t=x.responseText+""; var m=t.match(/SrumECmd[\s\S]{0,800}?(\d+\.\d+\.\d+)/i); if(m) LATEST_VER=m[1]; }
+  }catch(e){ WEB_OK=false; }
+  return LATEST_VER;
+}
+function updateVerPill(){
+  var s=LOCAL_VER?("SrumECmd v"+esc(LOCAL_VER)):"SrumECmd: not found";
+  if(!WEB_OK){ s+=" &middot; <span style='color:#8b949e'>no internet / no web source</span>"; }
+  else if(LATEST_VER){
+    if(LOCAL_VER && verCmp(LOCAL_VER,LATEST_VER)<0) s+=" &middot; <span style='color:#d29922'>update v"+esc(LATEST_VER)+" available</span>";
+    else if(LOCAL_VER) s+=" &middot; <span style='color:#3fb950'>latest</span>";
+    else s+=" &middot; latest v"+esc(LATEST_VER);
+  }
+  $("verpill").innerHTML=s;
+}
+function evaluateTooling(promptIfNeeded){
+  var dir=htaFolder();
+  var localComplete = dir ? fileExists(dir+"\\SrumECmd.exe") : false;   // exe next to the .hta (self-contained)
+  var found=resolveExe();
+  if(EXE) $("exeline").innerHTML="Tool: "+esc(EXE)+"  &middot;  run with DOTNET_ROLL_FORWARD=Major (covers .NET 9-target builds)";
+  else $("exeline").innerHTML='<span class="err">SrumECmd.exe not found next to this app ('+esc(dir||"app folder")+') or in C:\\ZimmermanTools</span>';
+  if(found) checkVersion(); else { LOCAL_VER=""; }
+  fetchLatest(); updateVerPill();
+  if(found){ var miss=checkDeps(); if(miss.length) setStatus("SrumECmd support files missing next to the exe: "+miss.join(", "),"err"); }
+  if(!promptIfNeeded) return;
+  if(localComplete){
+    // exe already next to the .hta → only prompt when the web says a newer version exists
+    if(WEB_OK && LOCAL_VER && verCmp(LOCAL_VER,LATEST_VER)<0){
+      if(confirm("A newer SrumECmd is available.\n\nNext to this app: v"+LOCAL_VER+"\nLatest online:   v"+LATEST_VER+"\n\nDownload the update next to the app now?")) downloadLatest();
+    }
+  } else {
+    if(WEB_OK){
+      var msg = (found ? ("SrumECmd is not set up next to this app (currently using "+EXE+").\n\n") : "SrumECmd.exe was not found.\n\n")
+        + "Download the latest (v"+LATEST_VER+") to a self-contained copy next to the app at:\n"+(dir||"?")+"\n\nProceed?";
+      if(confirm(msg)) downloadLatest();
+    } else if(found){
+      setStatus("Using local SrumECmd ("+EXE+") — no internet to reach Zimmerman Tools, so can't verify/download the latest.","muted");
+    } else {
+      setStatus("SrumECmd.exe not found next to this .hta and no internet to download it. Place SrumECmd.exe (net6/net9 build) next to this .hta.","err");
+    }
+  }
+}
+function downloadLatest(){
+  var target=htaFolder()||EXE_DIR;   // always install next to the .hta (self-contained)
+  if(!target){ setStatus("Cannot determine the app folder to install into","err"); return; }
+  if(!WEB_OK && !confirm("The Zimmerman Tools site did not respond earlier (no internet?).\n\nTry downloading SrumECmd from\n"+SRUM_ZIP_URL+"\ninto\n"+target+" anyway?")) return;
+  if(WEB_OK && !confirm("Download latest SrumECmd (v"+(LATEST_VER||KNOWN_LATEST_SRUM)+") from:\n"+SRUM_ZIP_URL+"\n\nInstall next to the app into:\n"+target+"\n\nProceed?")) return;
+  setStatus("Downloading & installing SrumECmd… (give it a moment)","muted");
+  var tq=String(target).replace(/'/g,"''");
+  var ps="$ErrorActionPreference='Stop';"
+    +"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
+    +"$u='"+SRUM_ZIP_URL+"';"
+    +"$z=Join-Path $env:TEMP 'SrumECmd_dl.zip';"
+    +"$x=Join-Path $env:TEMP ('SrumECmd_x_'+[guid]::NewGuid().ToString('N'));"
+    +"Invoke-WebRequest -Uri $u -OutFile $z;"
+    +"Expand-Archive -Force -Path $z -DestinationPath $x;"
+    +"$exe=Get-ChildItem -Path $x -Recurse -Filter SrumECmd.exe | Select-Object -First 1;"
+    +"if(-not $exe){throw 'SrumECmd.exe not found in downloaded archive'};"
+    +"$src=Split-Path $exe.FullName;"
+    +"New-Item -ItemType Directory -Force -Path '"+tq+"' | Out-Null;"
+    +"Copy-Item -Path (Join-Path $src '*') -Destination '"+tq+"' -Recurse -Force;"
+    +"Remove-Item $z,$x -Recurse -Force -ErrorAction SilentlyContinue;"
+    +"Write-Output 'INSTALL_OK'";
+  try{
+    var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -Command "'+ps+'" > "__LOG__" 2>&1']);
+    appendLog("--- SrumECmd download / install ---\n"+r.log);
+    if((r.log+"").indexOf("INSTALL_OK")>=0){ setStatus("SrumECmd installed to "+target,"ok"); evaluateTooling(false); }
+    else setStatus("Download/install failed — see log","err");
+  }catch(e){ setStatus("Download failed: "+e.message,"err"); }
+}
+
+/* ---------- actions ---------- */
+function checkVersion(){
+  if(!EXE || !fileExists(EXE)){ LOCAL_VER=""; updateVerPill(); setStatus("SrumECmd.exe not found — use 'Update / download SrumECmd'","err"); return; }
+  try{
+    var r=runBat([
+      "set DOTNET_ROLL_FORWARD=Major",
+      '"'+EXE+'" --version > "__LOG__" 2>&1'
+    ]);
+    // --version prints "0.5.1.0" (old builds) or "2026.5.0+<githash>" (2026.x) — take the leading semver
+    var m=r.log.match(/^\s*(\d+(?:\.\d+)+)/m) || r.log.match(/SrumECmd version ([0-9.]+)/i);
+    if(m){ LOCAL_VER=m[1]; updateVerPill(); setStatus("SrumECmd v"+LOCAL_VER+" detected","ok"); }
+    else { LOCAL_VER=""; updateVerPill(); setStatus("Ran SrumECmd but could not parse version — see log","err"); appendLog(r.log); }
+  }catch(e){ LOCAL_VER=""; updateVerPill(); setStatus("Version check failed: "+e.message,"err"); }
+}
+
+function processSrum(){
+  var inp=trimStr($("inPath").value);
+  var hive=trimStr($("hivePath").value);
+  var outdir=trimStr($("outDir").value);
+  var inmode=$("inMode").value;   // "f" file, "d" directory
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(inmode==="d"){
+    if(!inp||!fso.FolderExists(inp)){ setStatus("Directory not found: "+inp,"err"); return; }
+  }
+  else { if(!inp||!fso.FileExists(inp)){ setStatus("File not found: "+inp,"err"); return; } }
+  // live-box guard (spec §7.2): the running SRUM service holds SRUDB.dat open with an exclusive lock
+  if(inp.toLowerCase().indexOf(LIVE_SRU)===0){
+    setStatus("That's this machine's LIVE SRUM database — it is locked by the SRUM service and can't be read in place. Collect it first (Velociraptor / KAPE raw copy), then point this app at the collection tree.","err");
+    return;
+  }
+  if(inmode==="f" && hive && !fso.FileExists(hive)){ setStatus("SOFTWARE hive not found: "+hive,"err"); return; }
+  if(!outdir){ setStatus("Set an output directory","err"); return; }
+  if(!EXE||!fileExists(EXE)){ setStatus("SrumECmd.exe not found — download it first","err"); return; }
+  if(BUSY){ setStatus("A SrumECmd run is already in progress — wait for it to finish.","err"); return; }
+  PENDNOTE="";
+  var flag=(inmode==="d")?"-d":"-f";
+  var extra="";
+  if(inmode==="f" && hive) extra+=' -r "'+batEsc(hive)+'"';
+  if($("optDebug").checked) extra+=" --debug";
+  var before=csvNameSet(outdir);
+  appendLog("Running: \""+EXE+"\" "+flag+" \""+inp+"\" --csv \""+outdir+"\""+extra.replace(/%%/g,"%")
+    +"\nA console window shows progress; the app stays responsive and loads results automatically when done.");
+  BUSY=true; $("procBtn").disabled=true;
+  var binp=batEsc(inp), bout=batEsc(outdir);
+  var ctx=runBatAsync([
+    "set DOTNET_ROLL_FORWARD=Major",
+    'if not exist "'+bout+'" mkdir "'+bout+'"',
+    "echo SrumECmd is processing:",
+    'echo   '+binp,
+    "echo Output: "+bout,
+    "echo This window closes automatically when finished.",
+    "echo.",
+    '"'+batEsc(EXE)+'" '+flag+' "'+binp+'"'+extra+' --csv "'+bout+'" > "__LOG__" 2>&1'
+  ], true);
+  ctx.onTick=function(s){ setStatus("SrumECmd running… "+s+"s elapsed (app responsive; results load when done)","muted"); };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("SrumECmd still running after 30 min — stopped watching. Check the output folder / console window.","err"); };
+  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processSrumDone(log,outdir,before); };
+  setStatus("SrumECmd starting…","muted");
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+function processSrumDone(log,outdir,before,wasRepair){
+  appendLog("--- SrumECmd output"+(wasRepair?" (after repair)":"")+" ---\n"+log);
+  LASTOUTDIR=outdir;
+  var all=listCsvFiles(outdir);
+  var fresh=[]; for(var i=0;i<all.length;i++){ if(!before[all[i].name]) fresh.push(all[i]); }
+  if(!fresh.length){
+    diagnoseFailure(log,outdir,wasRepair);   // may launch the repair-on-copy flow
+    populateProduced(all);
+    return;
+  }
+  PRODUCED=fresh;
+  populateProduced(fresh);
+  // auto-load the exfil table (NetworkUsages) when present; otherwise the biggest CSV
+  var main=null;
+  for(var j=0;j<fresh.length;j++){ if(/_SrumECmd_NetworkUsages_Output\.csv$/i.test(fresh[j].name)){ main=fresh[j]; break; } }
+  if(!main){ main=fresh[0]; for(var k=1;k<fresh.length;k++){ if(fresh[k].size>main.size) main=fresh[k]; } }
+  try{ $("producedSel").value=main.path; }catch(e){}
+  PENDNOTE="";
+  if(/Did not locate any files named 'SOFTWARE'/i.test(log))
+    PENDNOTE=" NOTE: no SOFTWARE hive was found, so network profile names are blank — in directory mode point one level higher (e.g. …\\System32 instead of …\\System32\\SRU) so config\\SOFTWARE is inside the tree.";
+  setStatus("Produced "+fresh.length+" CSV(s)"+(wasRepair?" from the repaired copy":"")+" — opening tables."+PENDNOTE, PENDNOTE?"muted":"ok");
+  loadCsvFile(main.path);
+}
+
+/* ---------- ESE failure triage + repair-on-copy (spec §7.1; all three flavors verified on real collections) ---------- */
+function logFoundDat(log){ var m=String(log).match(/Found SRUM database file '([^']+)'/i); return m?m[1]:""; }
+function logFoundHive(log){ var m=String(log).match(/Found SOFTWARE hive '([^']+)'/i); return m?m[1]:""; }
+function diagnoseFailure(log,outdir,wasRepair){
+  // flavor 3: DB FORMAT newer than this box's ESE engine — NOT fixable locally (esentutl fails with -1209 too)
+  if(/EsentInvalidDatabaseVersionException|JET_errInvalidDatabaseVersion|Database engine is incompatible/i.test(log)){
+    setStatus("This SRUDB.dat was written by a NEWER Windows build than this analysis box — the local ESE engine cannot open it at all (JET_errInvalidDatabaseVersion), and esentutl repair fails the same way. Options: parse it on a Windows build at least as new as the source host (a VM works), or collect SRUM with Velociraptor's Windows.Forensics.SRUM artifact (engine-independent). Verify with:  esentutl /mh SRUDB.dat  — compare 'attached by' against this box's efvCurrent.","err");
+    return;
+  }
+  // flavors 1/2: newer-engine transaction logs breaking replay, or a genuinely dirty DB — fixable on a copy
+  if(/Isam\.Esent|database is dirty|esentutl\.exe/i.test(log)){
+    if(wasRepair){
+      setStatus("SrumECmd still failed after the automatic repair — see the log. Manual route on a copy: esentutl /r sru /i, then esentutl /p SRUDB.dat; if that also fails, parse on a Windows build >= the source host.","err");
+      return;
+    }
+    var dat=logFoundDat(log)||(($("inMode").value==="f")?trimStr($("inPath").value):"");
+    if(dat && fileExists(dat)){
+      if(confirm("SrumECmd hit an ESE error — a dirty database, or transaction logs written by a newer Windows build than this box (common in KAPE/Velociraptor collections).\n\nThis is usually fixable by processing a COPY of SRUDB.dat alone:\n  1. copy the .dat (WITHOUT the .log/.chk files — those are what break replay)\n     into "+outdir+"\\SRUM_repaired_<time>\\   (original evidence untouched)\n  2. esentutl /p /o on the copy (discards uncommitted updates)\n  3. re-run SrumECmd against the repaired copy\n\nAttempt automatic repair now?")){
+        runRepair(dat, log, outdir);
+        return;
+      }
+      setStatus("SrumECmd failed with an ESE error; automatic repair declined. Manual route on a COPY: esentutl /r sru /i, then esentutl /p SRUDB.dat, then re-run this app against the repaired copy.","err");
+      return;
+    }
+    setStatus("SrumECmd failed with an ESE error (dirty database / incompatible logs) but the SRUDB.dat path could not be read from the log. Repair manually on a COPY: esentutl /r sru /i, then esentutl /p SRUDB.dat.","err");
+    return;
+  }
+  if(/denied|unauthorized|being used by another process/i.test(log)){
+    setStatus("SrumECmd was denied access to the input — the file is locked (live SRUM service?) or needs an elevated run. Collect with Velociraptor/KAPE and process the copy.","err");
+    return;
+  }
+  setStatus("SrumECmd produced no new CSV — check the log. In directory mode the tree must contain a file literally named SRUDB.dat; in file mode check the path.","err");
+}
+function runRepair(dat, failLog, outdir){
+  if(BUSY){ setStatus("A SrumECmd run is already in progress — wait for it to finish.","err"); return; }
+  // hive preference: what SrumECmd found in the failed run > the -f mode field > sibling <datdir>\..\config\SOFTWARE
+  var hive=logFoundHive(failLog);
+  if(!hive && $("inMode").value==="f") hive=trimStr($("hivePath").value);
+  if(!hive){ var guess=parentDir(parentDir(dat))+"\\config\\SOFTWARE"; if(fileExists(guess)) hive=guess; }
+  var repDir=outdir+"\\SRUM_repaired_"+nowStamp();
+  var before=csvNameSet(outdir);
+  BUSY=true; $("procBtn").disabled=true;
+  appendLog("--- repair on a copy ---\ncopy "+dat+" -> "+repDir+"\\SRUDB.dat  (transaction logs deliberately excluded)\nesentutl /p /o, then SrumECmd -f"+(hive?(" with SOFTWARE hive "+hive):" (no SOFTWARE hive located — profile names will be blank)"));
+  var brep=batEsc(repDir), bout=batEsc(outdir);
+  var ctx=runBatAsync([
+    "set DOTNET_ROLL_FORWARD=Major",
+    'if not exist "'+brep+'" mkdir "'+brep+'"',
+    "echo Repairing a COPY of SRUDB.dat (original untouched) ...",
+    'copy /y "'+batEsc(dat)+'" "'+brep+'\\SRUDB.dat" > "__LOG__" 2>&1',
+    'attrib -r "'+brep+'\\SRUDB.dat" >> "__LOG__" 2>&1',
+    'cd /d "'+brep+'"',
+    "echo Running esentutl repair ...",
+    'esentutl /p SRUDB.dat /o >> "__LOG__" 2>&1',
+    'echo esentutl exit code %ERRORLEVEL% >> "__LOG__"',
+    "echo Re-running SrumECmd on the repaired copy ...",
+    '"'+batEsc(EXE)+'" -f "'+brep+'\\SRUDB.dat"'+(hive?(' -r "'+batEsc(hive)+'"'):'')+' --csv "'+bout+'" >> "__LOG__" 2>&1'
+  ], true);
+  ctx.onTick=function(s){ setStatus("Repairing + reprocessing… "+s+"s elapsed (app responsive; results load when done)","muted"); };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("Repair still running after 30 min — stopped watching. Check the console window.","err"); };
+  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processSrumDone(log,outdir,before,true); };
+  setStatus("Repair starting…","muted");
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+function csvNameSet(dir){ var o={}, l=listCsvFiles(dir); for(var i=0;i<l.length;i++) o[l[i].name]=true; return o; }
+function listCsvFiles(dir){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), out=[];
+  if(!fso.FolderExists(dir)) return out;
+  var e=new Enumerator(fso.GetFolder(dir).Files);
+  for(; !e.atEnd(); e.moveNext()){ var f=e.item(); if(/\.csv$/i.test(f.Name+"")) out.push({name:f.Name+"", path:f.Path+"", size:f.Size}); }
+  out.sort(function(a,b){ return a.name<b.name?1:(a.name>b.name?-1:0); });   // newest timestamp-prefix first
+  return out;
+}
+function fmtSize(n){ if(!n) return "0 B"; var u=["B","KB","MB","GB"], i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+" "+u[i]; }
+function populateProduced(list){
+  var sel=$("producedSel"); sel.innerHTML="";
+  for(var i=0;i<list.length;i++){
+    var lab=list[i].name+"  ("+fmtSize(list[i].size)+")";
+    var tn=tableNameOf(list[i].name);
+    if(tn && TABLE_INFO[tn.toLowerCase()]) lab+="  —  "+TABLE_INFO[tn.toLowerCase()];
+    var o=document.createElement("option"); o.value=list[i].path; o.text=lab; sel.add(o);
+  }
+  showEl("producedRow", list.length>0);
+}
+function openDir(){ var d=$("outDir").value; if(!d){ setStatus("No output directory set","err"); return; }
+  try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+d+'"',1,false); }catch(e){ setStatus("Could not open folder: "+e.message,"err"); } }
+
+/* ---------- CSV parser (RFC4180) — line-split hybrid: native split for the bulk,
+   careful field parsing only for lines containing quotes; merges rows split across
+   newlines inside quoted fields. Orders of magnitude faster than char-by-char in MSHTML. */
+function countQuotes(s){ var c=0, idx=-1; while((idx=s.indexOf('"',idx+1))>=0) c++; return c; }
+function parseCSVLine(line){
+  if(line.indexOf('"')<0) return line.split(",");   // fast path: no quotes → plain split
+  var out=[], field="", q=false, i=0, n=line.length;
+  while(i<n){ var c=line.charAt(i);
+    if(q){ if(c==='"'){ if(line.charAt(i+1)==='"'){ field+='"'; i+=2; continue; } q=false; i++; continue; } field+=c; i++; continue; }
+    if(c==='"'){ q=true; i++; continue; }
+    if(c===','){ out.push(field); field=""; i++; continue; }
+    field+=c; i++;
+  }
+  out.push(field); return out;
+}
+function isNumStr(s){ s=trimStr(String(s)); return s!=="" && /^-?\d+(\.\d+)?$/.test(s); }
+function dayOf(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})/); if(!m) return 0; return Number(m[1]+m[2]+m[3]); }
+function dayNum(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{1,2})-(\d{1,2})/); if(!m) return 0;
+  function p(x){ x=String(x); return x.length<2?("0"+x):x; }
+  return Number(m[1]+p(m[2])+p(m[3])); }
+function fileSize(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").GetFile(p).Size; }catch(e){ return 0; } }
+var RUN_RE = /^(\d{14})_SrumECmd_(.+)_Output\.csv$/i;
+
+/* ---------- tab model: one tab per table CSV, parsed lazily on first open ---------- */
+/* Loading any CSV of a SrumECmd run discovers every same-run sibling table in the folder. */
+function loadCsvFile(path){
+  var name=baseName(path);
+  var m=name.match(RUN_RE);
+  if(m){
+    var dir=parentDir(path);
+    var all=listCsvFiles(dir), run=[], others={};
+    for(var i=0;i<all.length;i++){ var mm=all[i].name.match(RUN_RE);
+      if(mm){ if(mm[1].toLowerCase()===m[1].toLowerCase()) run.push(all[i]); else others[mm[1]]=1; } }
+    var otherN=0,k; for(k in others){ if(others.hasOwnProperty(k)) otherN++; }
+    LASTOUTDIR=dir;
+    $("srcpill").innerHTML=run.length+" tables &middot; run "+esc(m[1]);
+    if(otherN) appendLog("Note: "+otherN+" other SrumECmd run(s) exist in "+dir+" — load a CSV from that run prefix to switch.");
+    tabsFromFiles(run, m[2]);
+    return;
+  }
+  // non-SrumECmd CSV → single generic tab
+  $("srcpill").innerHTML=esc(name);
+  tabsFromFiles([{name:name, path:path, size:fileSize(path)}], null);
+}
+var TABLE_ORDER={networkusages:1,appresourceuseinfo:2,apptimelineprovider:3,networkconnections:4,vfuprov:5,pushnotifications:6,energyusage:7};
+function csvTab(f){ return {kind:"csv", name:tableNameOf(f.name)||f.name, path:f.path, size:f.size,
+  state:"unloaded", head:null, rows:[], blobs:[], days:[], keys:[], sortKey:-1, sortDir:1, tsIdx:-1, exeIdx:-1, sidIdx:-1, cbs:[]}; }
+function aggTab(name, srcName, isNet){ return {kind:"agg", name:name, srcName:srcName, isNet:isNet, path:"(derived from "+srcName+")",
+  size:0, state:"unloaded", rows:[], sortKey:-2, sortDir:-1}; }   // sortKey -2 = the aggregate's primary byte column, desc
+function findTab(name){ for(var i=0;i<TABS.length;i++){ if(TABS[i].name.toLowerCase()===String(name).toLowerCase()) return TABS[i]; } return null; }
+function tabIndex(t){ for(var i=0;i<TABS.length;i++){ if(TABS[i]===t) return i; } return -1; }
+function tabsFromFiles(files, openName){
+  TABS=[]; CURTAB=-1; SCOREMAP={}; SCOREN=0; AGGOBJ={}; AGGWIN="?";
+  closeDetail();
+  var list=files.slice(0);
+  list.sort(function(a,b){ var ta=tableNameOf(a.name).toLowerCase(), tb=tableNameOf(b.name).toLowerCase();
+    var oa=TABLE_ORDER[ta]||99, ob=TABLE_ORDER[tb]||99; if(oa!==ob) return oa-ob; return ta<tb?-1:(ta>tb?1:0); });
+  var csv=[], hasNU=false, hasAR=false;
+  for(var i=0;i<list.length;i++){ var t=csvTab(list[i]); csv.push(t);
+    if(t.name.toLowerCase()==="networkusages") hasNU=true;
+    if(t.name.toLowerCase()==="appresourceuseinfo") hasAR=true; }
+  if(hasNU) TABS.push(aggTab("Network Summary","NetworkUsages",true));
+  if(hasAR) TABS.push(aggTab("App Resource Summary","AppResourceUseInfo",false));
+  for(var j=0;j<csv.length;j++) TABS.push(csv[j]);
+  $("results").className="";
+  // land on the flagship exfil view when this run has one; otherwise the requested/first table
+  var idx=0, ns=findTab("Network Summary");
+  if(ns) idx=tabIndex(ns);
+  else if(openName){ for(var k=0;k<TABS.length;k++){ if(TABS[k].name.toLowerCase()===String(openName).toLowerCase()){ idx=k; break; } } }
+  renderTabbar();
+  selectTab(idx);
+  ensureCore();
+}
+/* parse the two scoring sources (NetworkUsages + AppResourceUseInfo) up front, then build aggregates (spec §8) */
+function ensureCore(){
+  var chain=[], nu=findTab("NetworkUsages"), ar=findTab("AppResourceUseInfo");
+  if(nu) chain.push(nu);
+  if(ar) chain.push(ar);
+  function next(){
+    while(chain.length){ var t=chain.shift(); if(t.state!=="ready"){ parseTabAsync(t,next); return; } }
+    rebuildAggs();
+  }
+  next();
+}
+function renderTabbar(){
+  var h="";
+  for(var i=0;i<TABS.length;i++){ var t=TABS[i];
+    var lab=t.name+(t.state==="ready"?(" ("+nf(t.rows.length)+")"):(t.state==="loading"?" (parsing…)":(t.kind==="agg"?"":" ("+fmtSize(t.size)+")")));
+    var tip=(t.kind==="agg")?("one row per executable+SID, aggregated from "+t.srcName):(TABLE_INFO[t.name.toLowerCase()]||"");
+    h+='<button class="btn'+(i===CURTAB?" on":"")+'" data-tab="'+i+'" title="'+esc(tip)+'">'+esc(lab)+'</button>';
+  }
+  $("tabbar").innerHTML=h;
+  var bs=$("tabbar").getElementsByTagName("button");
+  for(var j=0;j<bs.length;j++){ bs[j].onclick=function(){ selectTab(parseInt(this.getAttribute("data-tab"),10)); }; }
+}
+function selectTab(i){
+  if(i<0||i>=TABS.length) return;
+  CURTAB=i; renderTabbar();
+  var t=TABS[i];
+  $("tableTitle").innerHTML=(t.kind==="agg")?(esc(t.name)+" &mdash; one row per executable + SID"):("SRUM table: "+esc(t.name));
+  if(t.kind==="agg"){
+    var src=findTab(t.srcName);
+    if(!src){ setStatus(t.srcName+" is not part of this run","err"); return; }
+    if(src.state!=="ready"){ setStatus("Parsing "+src.name+" to build "+t.name+"…","muted"); parseTabAsync(src, rebuildAggs); return; }
+    if(t.state!=="ready" || AGGWIN!==(DFROM+"|"+DTO)){ rebuildAggs(); return; }
+    renderGrid(); return;
+  }
+  if(t.state==="ready"){ renderGrid(); return; }
+  if(t.state==="loading") return;   // parse already underway; renders on completion if still current
+  parseTabAsync(t);
+}
+/* chunked parse: read whole file fast (64KB ADODB chunks), then parse lines in setTimeout batches
+   so a 30MB / 160k-row table never trips the MSHTML long-running-script watchdog */
+function fireCbs(t){ var cbs=t.cbs||[]; t.cbs=[]; for(var i=0;i<cbs.length;i++){ try{ cbs[i](); }catch(e){} } }
+function parseTabAsync(t, cb){
+  if(cb){ if(!t.cbs) t.cbs=[]; t.cbs.push(cb); }
+  if(t.state==="ready"){ fireCbs(t); return; }
+  if(t.state==="loading") return;   // already parsing; queued callbacks fire on completion
+  t.state="loading"; renderTabbar();
+  setStatus("Reading "+t.name+" ("+fmtSize(t.size)+")…","muted");
+  window.setTimeout(function(){
+    var text;
+    try{ text=readUtf8(t.path); }catch(e){ t.state="unloaded"; renderTabbar(); setStatus("Could not read "+t.path+": "+e.message,"err"); return; }
+    if(text.length && text.charCodeAt(0)===0xFEFF) text=text.substring(1);
+    var lines=text.split("\n"); text=null;
+    var li=0, n=lines.length, headLine="";
+    while(li<n){ headLine=lines[li]; li++; if(trimStr(headLine)!=="") break; }
+    if(headLine.charAt(headLine.length-1)==='\r') headLine=headLine.substring(0,headLine.length-1);
+    t.head=parseCSVLine(headLine);
+    var hm={}; for(var c=0;c<t.head.length;c++) hm[trimStr(t.head[c]).toLowerCase()]=c;
+    t.tsIdx=("timestamp" in hm)?hm["timestamp"]:-1;
+    t.exeIdx=("exeinfo" in hm)?hm["exeinfo"]:-1;
+    t.sidIdx=("sid" in hm)?hm["sid"]:-1;
+    t.rows=[]; t.blobs=[]; t.days=[]; t.keys=[];
+    var CHUNK=10000;
+    function step(){
+      var end=li+CHUNK; if(end>n) end=n;
+      while(li<end){
+        var line=lines[li]; li++;
+        var qc=countQuotes(line);
+        while((qc%2)===1 && li<n){ line+="\n"+lines[li]; qc+=countQuotes(lines[li]); li++; }
+        if(line.charAt(line.length-1)==='\r') line=line.substring(0,line.length-1);
+        if(line==="") continue;
+        var rw=parseCSVLine(line);
+        t.rows.push(rw);
+        t.blobs.push(line.toLowerCase());                                        // precomputed search blob
+        t.days.push((t.tsIdx>=0&&t.tsIdx<rw.length)?dayOf(rw[t.tsIdx]):0);       // precomputed date-filter key
+        t.keys.push((t.exeIdx>=0)?(((t.exeIdx<rw.length?rw[t.exeIdx]:"")+"").toLowerCase()+"|"+(t.sidIdx>=0&&t.sidIdx<rw.length?rw[t.sidIdx]:"")):"");
+      }
+      if(li<n){
+        setStatus("Parsing "+t.name+"… "+nf(t.rows.length)+" rows","muted");
+        window.setTimeout(step,10);
+        return;
+      }
+      lines=null;
+      t.state="ready";
+      renderTabbar();
+      setStatus("Loaded "+nf(t.rows.length)+" rows from "+t.name+PENDNOTE, PENDNOTE?"muted":"ok");
+      if(CURTAB>=0 && TABS[CURTAB]===t) renderGrid();
+      fireCbs(t);
+    }
+    step();
+  },30);
+}
+
+/* ---------- aggregation: one row per (ExeInfo, Sid), windowed to the active date range (spec §6.1/§6.3) ---------- */
+function numv(v){ var x=parseFloat(v); return isFinite(x)?x:0; }
+function cellv(rw,i){ return (i>=0&&i<rw.length)?rw[i]:""; }
+function pathLike(pL){ return /^(\\device\\|[a-z]:\\|\\\\)/.test(pL); }
+function exeBase(nameL){ return String(nameL).replace(/\.(exe|com|scr|bat|cmd)$/,""); }
+function dispNameOf(exe){ if(!exe) return "(blank ExeInfo)"; return pathLike(exe.toLowerCase())?baseName(exe):exe; }
+function isUserPath(pL){ if(!pL) return false;
+  if(pL.indexOf("\\programdata\\microsoft\\windows defender\\")>=0) return false;   // Defender platform updates — chronic FP
+  for(var i=0;i<USERPATHS.length;i++){ if(pL.indexOf(USERPATHS[i])>=0) return true; } return false; }
+function looksRandom(nameL){
+  var nm=exeBase(nameL).replace(/[^a-z0-9]/g,"");
+  if(/^[0-9a-f]{10,}$/.test(nm)) return true;
+  if(nm.length>=10){ for(var i=0;i+6<=nm.length;i++){ if(/^[bcdfghjklmnpqrstvwxz]{6}$/.test(nm.substr(i,6))) return true; } }
+  return false;
+}
+function buildAgg(src, isNet){
+  var hm={}; for(var c=0;c<src.head.length;c++) hm[trimStr(src.head[c]).toLowerCase()]=c;
+  function gi(nm){ return (nm in hm)?hm[nm]:-1; }
+  var iExe=gi("exeinfo"), iSidT=gi("sidtype"), iSid=gi("sid"), iUser=gi("username"), iTs=src.tsIdx;
+  var iSent=gi("bytessent"), iRecv=gi("bytesreceived"), iIf=gi("interfacetype"), iProf=gi("profilename");
+  var iBgR=gi("backgroundbytesread"), iBgW=gi("backgroundbyteswritten"), iFgR=gi("foregroundbytesread"), iFgW=gi("foregroundbyteswritten");
+  var map={}, out=[];
+  for(var r=0;r<src.rows.length;r++){
+    var d=src.days[r];
+    if(DFROM&&(!d||d<DFROM)) continue;
+    if(DTO&&(!d||d>DTO)) continue;
+    var rw=src.rows[r];
+    var exe=cellv(rw,iExe), sid=cellv(rw,iSid);
+    var key=exe.toLowerCase()+"|"+sid;
+    var o=map[key];
+    if(!o){
+      o=map[key]={key:key, exe:exe, exeL:exe.toLowerCase(), sid:sid, sidType:cellv(rw,iSidT), user:cellv(rw,iUser),
+        sent:0, recv:0, read:0, written:0, n:0, firstTs:"", lastTs:"", firstDay:0, lastDay:0, ifs:{}, profs:{},
+        tags:[], reasons:[], score:0, sus:false, recent:false, blob:""};
+      out.push(o);
+    }
+    o.n++;
+    if(!o.user){ var u=cellv(rw,iUser); if(u) o.user=u; }
+    if(isNet){
+      o.sent+=numv(cellv(rw,iSent)); o.recv+=numv(cellv(rw,iRecv));
+      var f=cellv(rw,iIf); if(f) o.ifs[String(f).replace(/^IF_TYPE_/,"")]=1;
+      var p=cellv(rw,iProf); if(p) o.profs[p]=1;
+    } else {
+      o.read+=numv(cellv(rw,iBgR))+numv(cellv(rw,iFgR));
+      o.written+=numv(cellv(rw,iBgW))+numv(cellv(rw,iFgW));
+    }
+    var ts=cellv(rw,iTs);
+    if(ts){ if(!o.firstTs||ts<o.firstTs){ o.firstTs=ts; o.firstDay=d; } if(ts>o.lastTs){ o.lastTs=ts; o.lastDay=d; } }
+  }
+  for(var i=0;i<out.length;i++){ var oo=out[i];
+    oo.userDisp=(oo.sid==="S-1-5-18")?"SYSTEM":(oo.user||oo.sid||oo.sidType||"?");
+    oo.ifList=joinKeys(oo.ifs); oo.profList=joinKeys(oo.profs);
+    oo.blob=(oo.exeL+" "+oo.sid+" "+oo.user+" "+oo.userDisp+" "+oo.ifList+" "+oo.profList).toLowerCase();
+  }
+  return out;
+}
+function joinKeys(o){ var a=[],k; for(k in o){ if(o.hasOwnProperty(k)) a.push(k); } a.sort(); return a.join(", "); }
+/* scoring pass — separate from aggregation so IOC changes rescore instantly (spec §6.3 H-table) */
+function scoreAgg(o, isNet, recentCut){
+  var tags=[], reasons=[], score=0;
+  var pL=pathLike(o.exeL)?o.exeL:"";
+  var base=exeBase(baseName(o.exeL));
+  var h1=(pL && isUserPath(pL));
+  if(h1){ score+=2; tags.push("USERPATH"); reasons.push("Runs from a user-writable path: "+o.exe); }
+  if(LOLBINS[base]){ score+=1; tags.push("LOLBIN"); reasons.push("LOLBIN / dual-use executable ("+base+")");
+    if(h1){ score+=1; reasons.push("LOLBIN running from a user-writable path"); } }
+  if(OSNAMES[base] && pL && pL.indexOf("\\windows\\")<0){
+    score+=3; tags.push("MASQ"); reasons.push("OS-binary name running OUTSIDE \\Windows\\: "+o.exe); }
+  if(looksRandom(base)){ score+=1; tags.push("RANDOM"); reasons.push("Random-looking executable name"); }
+  if(isNet && o.sid==="S-1-5-18" && (o.sent+o.recv)>0 && h1){
+    score+=2; tags.push("SYS-NET"); reasons.push("SYSTEM network activity from a user-writable path - boot-service implant pattern"); }
+  if(isNet && o.sent>=VOL_T1){
+    var v=(o.sent>=VOL_T2)?2:1; score+=v; tags.push("VOL");
+    reasons.push(fmtSize(o.sent)+" sent"+(v===2?" (>= 1 GB)":" (>= 100 MB)")); }
+  if(isNet && o.sent>=UPLOAD_MIN && o.sent>=UPLOAD_RATIO*o.recv && !UPLOAD_ALLOW[base]){
+    score+=1; tags.push("UPLOAD"); reasons.push("Upload-heavy: "+fmtSize(o.sent)+" sent vs "+fmtSize(o.recv)+" received"); }
+  if(IOCS.length){
+    var hits=[];
+    for(var t2=0;t2<IOCS.length;t2++){ if(o.blob.indexOf(IOCS[t2])>=0){ hits.push(IOCS[t2]); if(hits.length>=3) break; } }
+    if(hits.length){ score+=3; tags.push("IOC"); reasons.push("IOC/keyword hit: "+hits.join(", ")); }
+  }
+  o.recent=(recentCut && o.firstDay>=recentCut);
+  if(o.recent){ tags.push("NEW"); reasons.push("First seen in the last "+RECENT_DAYS+" days of the dataset ("+o.firstTs+")"); }   // filter aid, no score
+  o.tags=tags; o.reasons=reasons; o.score=score; o.sus=(score>=2);
+}
+function dayFromMs(ms){ var d=new Date(ms); function p(x){return (x<10?"0":"")+x;}
+  return Number(""+d.getUTCFullYear()+p(d.getUTCMonth()+1)+p(d.getUTCDate())); }
+function msOf(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if(!m) return 0; return Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]); }
+function rebuildAggs(){
+  var changed=false;
+  for(var i=0;i<TABS.length;i++){ var t=TABS[i];
+    if(t.kind!=="agg") continue;
+    var src=findTab(t.srcName);
+    if(!src||src.state!=="ready") continue;
+    t.rows=buildAgg(src, t.isNet);
+    t.state="ready"; changed=true;
+  }
+  if(!changed) return;
+  AGGWIN=DFROM+"|"+DTO;
+  rescoreAggs();
+}
+function rescoreAggs(){
+  // recent cutoff anchored to the newest record across both aggregate sets
+  var maxTs="";
+  var i,j,t;
+  for(i=0;i<TABS.length;i++){ t=TABS[i]; if(t.kind!=="agg"||t.state!=="ready") continue;
+    for(j=0;j<t.rows.length;j++){ if(t.rows[j].lastTs>maxTs) maxTs=t.rows[j].lastTs; } }
+  var recentCut=maxTs?dayFromMs(msOf(maxTs)-RECENT_DAYS*86400000):0;
+  SCOREMAP={}; SCOREN=0; AGGOBJ={};
+  // score app-resource first, then network overwrites (network scores are a superset: same path tags + net tags)
+  var order=["App Resource Summary","Network Summary"];
+  for(i=0;i<order.length;i++){ t=findTab(order[i]);
+    if(!t||t.state!=="ready") continue;
+    for(j=0;j<t.rows.length;j++){ var o=t.rows[j];
+      scoreAgg(o, t.isNet, recentCut);
+      SCOREMAP[o.key]={tags:o.tags, reasons:o.reasons, score:o.score, sus:o.sus};
+      var e=AGGOBJ[o.key]; if(!e) e=AGGOBJ[o.key]={};
+      if(t.isNet) e.net=o; else e.app=o;
+    }
+  }
+  var k; for(k in SCOREMAP){ if(SCOREMAP.hasOwnProperty(k)) SCOREN++; }
+  renderTabbar();
+  renderGrid();
+  if(DETKEY){ if(AGGOBJ[DETKEY]) renderDetail(DETKEY); else closeDetail(); }
+}
+
+/* ---------- grid render (current tab; QUERY + date range + category are global) ---------- */
+function stat(n,l){ return '<span class="stat"><span class="n">'+esc(n)+'</span><span class="l">'+esc(l)+'</span></span>'; }
+function hasTag(sc,tag){ if(!sc) return false; for(var i=0;i<sc.tags.length;i++){ if(sc.tags[i]===tag) return true; } return false; }
+function passCat(sc, sid){
+  if(CURCAT==="all") return true;
+  if(CURCAT==="system") return sid==="S-1-5-18";
+  if(!sc) return false;
+  if(CURCAT==="sus") return sc.sus;
+  if(CURCAT==="userpath") return hasTag(sc,"USERPATH");
+  if(CURCAT==="lolbin") return hasTag(sc,"LOLBIN");
+  if(CURCAT==="vol") return hasTag(sc,"VOL");
+  if(CURCAT==="ioc") return hasTag(sc,"IOC");
+  return true;
+}
+function bumpCounts(c, sc, sid){
+  c.all++;
+  if(sid==="S-1-5-18") c.system++;
+  if(!sc) return;
+  if(sc.sus) c.sus++;
+  if(hasTag(sc,"USERPATH")) c.userpath++;
+  if(hasTag(sc,"LOLBIN")) c.lolbin++;
+  if(hasTag(sc,"VOL")) c.vol++;
+  if(hasTag(sc,"IOC")) c.ioc++;
+}
+function updateCatButtons(c){
+  var names={all:"All",sus:"Suspicious",system:"SYSTEM",userpath:"User-path",lolbin:"LOLBIN",vol:"High-volume",ioc:"IOC hits"};
+  var bs=$("cats").getElementsByTagName("button");
+  for(var j=0;j<bs.length;j++){ var k=bs[j].getAttribute("data-cat"); if(!k) continue;
+    bs[j].innerHTML=names[k]+(c?(" ("+nf(c[k])+")"):"");
+    bs[j].className=(k===CURCAT)?"btn on":"btn"; }
+}
+var TAGCLS={USERPATH:"usr",LOLBIN:"lol",MASQ:"ioc",IOC:"ioc",RANDOM:"rare","SYS-NET":"sys",VOL:"vol",UPLOAD:"vol",NEW:"gen"};
+function tagHtml(sc){
+  if(!sc) return "";
+  var h="", ttl=esc(sc.reasons.join("; "));
+  if(sc.sus) h+='<span class="tag sus" title="'+ttl+'">SUS '+sc.score+'</span>';
+  for(var i=0;i<sc.tags.length;i++){ var g=sc.tags[i];
+    h+='<span class="tag '+(TAGCLS[g]||"gen")+'" title="'+ttl+'">'+esc(g)+'</span>'; }
+  return h;
+}
+function renderGrid(){
+  if(CURTAB<0||CURTAB>=TABS.length) return;
+  var t=TABS[CURTAB];
+  if(t.state!=="ready") return;
+  if(t.kind==="agg") renderAggGrid(t); else renderCsvGrid(t);
+  renderOverview();
+}
+/* ---------- overview dashboard (spec §6.1) — recomputed under the active filters ---------- */
+function bar(label,frac,val,q,sus){
+  var lc=q?(' lnk" data-q="'+esc(q)):'';
+  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(label)+'"'+(sus?' style="color:#ff6b6b"':'')+'>'+esc(label)+'</span>'
+    +'<span class="btrack"><span class="bfill'+(sus?' warn':'')+'" style="width:'+(frac*100).toFixed(1)+'%"></span></span>'
+    +'<span class="bval">'+esc(val)+'</span></div>';
+}
+function listRow(label,val,q,cls){
+  var lc=q?(' lnk" data-q="'+esc(q)):'';
+  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(label)+'" style="width:52%">'+esc(label)+'</span>'
+    +'<span class="bval" style="width:44%;'+(cls||"")+'">'+esc(val)+'</span></div>';
+}
+function qOf(o){ var d=dispNameOf(o.exe); return (d==="(blank ExeInfo)")?"":d; }
+function fmtShortTs(s){ var m=String(s).match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/); return m?(m[1]+" "+m[2]):String(s||"—"); }
+function renderOverview(){
+  var ns=findTab("Network Summary");
+  if(!ns||ns.state!=="ready"){
+    showEl("ovCards", false);
+    $("ovTitle").innerHTML="Overview";
+    var t=(CURTAB>=0&&CURTAB<TABS.length)?TABS[CURTAB]:null;
+    if(t&&t.kind==="csv"&&t.state==="ready")
+      $("statbar").innerHTML=stat(nf(t.rows.length),"rows")+stat(nf(t.head.length),"columns")+stat(nf(TABS.length),"tables")+
+        '<span class="stat" style="min-width:240px"><span class="n" style="font-size:12px">'+esc(baseName(t.path))+'</span><span class="l">source</span></span>';
+    else if(findTab("NetworkUsages"))
+      $("statbar").innerHTML='<span class="muted">building aggregates…</span>';
+    return;
+  }
+  $("ovTitle").innerHTML="Overview &mdash; reflects active filters";
+  var view=[], i, o;
+  for(i=0;i<ns.rows.length;i++){ o=ns.rows[i];
+    if(QUERY && o.blob.indexOf(QUERY)<0) continue;
+    if(!passCat(o,o.sid)) continue;
+    view.push(o);
+  }
+  var sent=0,recv=0,sus=0,users={},profs={},sysN=0,minTs="",maxTs="",k;
+  for(i=0;i<view.length;i++){ o=view[i];
+    sent+=o.sent; recv+=o.recv;
+    if(o.sus) sus++;
+    if(o.userDisp) users[o.userDisp]=1;
+    for(k in o.profs){ if(o.profs.hasOwnProperty(k)) profs[k]=1; }
+    if(o.sid==="S-1-5-18"&&(o.sent+o.recv)>0) sysN++;
+    if(o.firstTs&&(!minTs||o.firstTs<minTs)) minTs=o.firstTs;
+    if(o.lastTs&&o.lastTs>maxTs) maxTs=o.lastTs;
+  }
+  var uN=0; for(k in users){ if(users.hasOwnProperty(k)) uN++; }
+  var pN=0; for(k in profs){ if(profs.hasOwnProperty(k)) pN++; }
+  $("statbar").innerHTML=
+    stat(nf(view.length),"exe+SID pairs")+stat(nf(sus),"suspicious")+stat(nf(sysN),"SYSTEM w/ network")+
+    stat(fmtSize(sent),"sent")+stat(fmtSize(recv),"received")+stat(nf(uN),"users")+stat(nf(pN),"net profiles")+
+    '<span class="stat" style="min-width:250px"><span class="n" style="font-size:12px">'+esc(fmtShortTs(minTs)+" → "+fmtShortTs(maxTs))+'</span><span class="l">Timestamp span (UTC)</span></span>';
+  // col 1: top talkers by bytes sent
+  var bySent=view.slice(0).sort(function(a,b){ return b.sent-a.sent; });
+  var h="", max=bySent.length?bySent[0].sent:0;
+  for(i=0;i<bySent.length&&i<12;i++){ o=bySent[i];
+    h+=bar(dispNameOf(o.exe), max?o.sent/max:0, fmtSize(o.sent), qOf(o), o.sus); }
+  $("topSent").innerHTML=h||'<span class="muted">none</span>';
+  // col 2: suspicious, score-ranked
+  var byScore=[]; for(i=0;i<view.length;i++){ if(view[i].sus) byScore.push(view[i]); }
+  byScore.sort(function(a,b){ return (b.score-a.score)||(b.sent-a.sent); });
+  h=""; for(i=0;i<byScore.length&&i<12;i++){ o=byScore[i];
+    h+=listRow(dispNameOf(o.exe)+" ["+o.tags.join(",")+"]", "score "+o.score+" · "+fmtSize(o.sent), qOf(o), "color:#ff6b6b"); }
+  $("topSus").innerHTML=h||'<span class="ok">No suspicious aggregates</span>';
+  // col 3: SYSTEM network hotlist (where boot-service implants show up)
+  var sysL=[]; for(i=0;i<view.length;i++){ o=view[i]; if(o.sid==="S-1-5-18"&&(o.sent+o.recv)>0) sysL.push(o); }
+  sysL.sort(function(a,b){ return b.sent-a.sent; });
+  h=""; for(i=0;i<sysL.length&&i<12;i++){ o=sysL[i];
+    h+=listRow(dispNameOf(o.exe), fmtSize(o.sent)+" sent", qOf(o), o.sus?"color:#ff6b6b":""); }
+  $("topSys").innerHTML=h||'<span class="muted">none</span>';
+  showEl("ovCards", true);
+}
+function renderCsvGrid(t){
+  if(!t.head) return;
+  var showTags=(SCOREN>0 && t.exeIdx>=0);
+  var counts={all:0,sus:0,system:0,userpath:0,lolbin:0,vol:0,ioc:0};
+  var idx=[], q=QUERY, i;
+  for(i=0;i<t.rows.length;i++){
+    if(DFROM&&(!t.days[i]||t.days[i]<DFROM)) continue;
+    if(DTO&&(!t.days[i]||t.days[i]>DTO)) continue;
+    if(q && t.blobs[i].indexOf(q)<0) continue;
+    var sc=showTags?SCOREMAP[t.keys[i]]:null;
+    var sid=(t.sidIdx>=0&&t.sidIdx<t.rows[i].length)?t.rows[i][t.sidIdx]:"";
+    bumpCounts(counts,sc,sid);
+    if(!passCat(sc,sid)) continue;
+    idx.push(i);
+  }
+  updateCatButtons(counts);
+  if(t.sortKey>=0){ var k=t.sortKey, dir=t.sortDir, rows=t.rows;
+    idx.sort(function(a,b){ var x=(k<rows[a].length?rows[a][k]:""), y=(k<rows[b].length?rows[b][k]:"");
+      if(isNumStr(x)&&isNumStr(y)) return (parseFloat(x)-parseFloat(y))*dir;
+      x=String(x).toLowerCase(); y=String(y).toLowerCase(); return x<y?-dir:(x>y?dir:0); });
+  }
+  else if(t.sortKey===-3){ var d3=t.sortDir;   // Tags column: sort by inherited score
+    idx.sort(function(a,b){ var xa=SCOREMAP[t.keys[a]], xb=SCOREMAP[t.keys[b]];
+      return ((xa?xa.score:0)-(xb?xb.score:0))*d3; });
+  }
+  var shown=idx.length>MAXROWS?MAXROWS:idx.length;
+  var h="<thead><tr>";
+  if(showTags) h+='<th data-k="-3">Tags'+((t.sortKey===-3)?(t.sortDir>0?" ▲":" ▼"):"")+'</th>';
+  for(var c=0;c<t.head.length;c++){ var ar=(t.sortKey===c)?(t.sortDir>0?" ▲":" ▼"):""; h+='<th data-k="'+c+'">'+esc(t.head[c])+ar+'</th>'; }
+  h+="</tr></thead><tbody>";
+  for(var r=0;r<shown;r++){ var ri=idx[r], row=t.rows[ri];
+    var rsc=showTags?SCOREMAP[t.keys[ri]]:null;
+    h+='<tr data-i="'+r+'"'+((rsc&&rsc.sus)?' class="sus"':'')+' style="cursor:pointer">';
+    if(showTags) h+='<td class="first">'+tagHtml(rsc)+'</td>';
+    for(var c2=0;c2<t.head.length;c2++){ var v=(c2<row.length?row[c2]:""); h+='<td class="mono" title="'+esc(v)+'">'+esc(v)+'</td>'; }
+    h+="</tr>"; }
+  h+="</tbody>"; $("tbl").innerHTML=h;
+  $("count").innerHTML=nf(idx.length)+" rows"+(shown<idx.length?(" (showing "+nf(shown)+")"):"");
+  wireSort(t);
+  applyFreeze();
+  window.__viewIdx=idx; window.__viewTab=t;
+}
+/* aggregate columns (spec §6.1): Network Summary + App Resource Summary */
+function fmtB(n){ return '<td class="mono" style="text-align:right" title="'+esc(nf(Math.round(n)))+' bytes">'+esc(fmtSize(n))+'</td>'; }
+var NCOLS=[
+  {h:"Tags", sk:function(o){return -o.score;}, cell:function(o){return '<td class="first">'+tagHtml(o)+'</td>';}},
+  {h:"Executable", sk:function(o){return dispNameOf(o.exe).toLowerCase();}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'"><b>'+esc(dispNameOf(o.exe))+'</b></td>';}},
+  {h:"Path / info", sk:function(o){return o.exeL;}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'">'+esc(o.exe)+'</td>';}},
+  {h:"User", sk:function(o){return String(o.userDisp).toLowerCase();}, cell:function(o){return '<td class="mono'+(o.sid==="S-1-5-18"?'" style="color:#ff9b6b':'')+'" title="'+esc(o.sid)+'">'+esc(o.userDisp)+'</td>';}},
+  {h:"Sent", sk:function(o){return o.sent;}, cell:function(o){return fmtB(o.sent);}},
+  {h:"Received", sk:function(o){return o.recv;}, cell:function(o){return fmtB(o.recv);}},
+  {h:"Records", sk:function(o){return o.n;}, cell:function(o){return '<td class="mono" style="text-align:right">'+esc(nf(o.n))+'</td>';}},
+  {h:"First seen (UTC)", sk:function(o){return o.firstTs;}, cell:function(o){return '<td class="mono">'+esc(o.firstTs)+'</td>';}},
+  {h:"Last seen (UTC)", sk:function(o){return o.lastTs;}, cell:function(o){return '<td class="mono">'+esc(o.lastTs)+'</td>';}},
+  {h:"Interfaces", sk:function(o){return o.ifList;}, cell:function(o){return '<td class="muted" title="'+esc(o.ifList)+'">'+esc(o.ifList)+'</td>';}},
+  {h:"Profiles", sk:function(o){return o.profList;}, cell:function(o){return '<td class="muted" title="'+esc(o.profList)+'">'+esc(o.profList)+'</td>';}}
+];
+var ACOLS=[
+  {h:"Tags", sk:function(o){return -o.score;}, cell:function(o){return '<td class="first">'+tagHtml(o)+'</td>';}},
+  {h:"Executable", sk:function(o){return dispNameOf(o.exe).toLowerCase();}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'"><b>'+esc(dispNameOf(o.exe))+'</b></td>';}},
+  {h:"Path / info", sk:function(o){return o.exeL;}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'">'+esc(o.exe)+'</td>';}},
+  {h:"User", sk:function(o){return String(o.userDisp).toLowerCase();}, cell:function(o){return '<td class="mono'+(o.sid==="S-1-5-18"?'" style="color:#ff9b6b':'')+'" title="'+esc(o.sid)+'">'+esc(o.userDisp)+'</td>';}},
+  {h:"Bytes read", sk:function(o){return o.read;}, cell:function(o){return fmtB(o.read);}},
+  {h:"Bytes written", sk:function(o){return o.written;}, cell:function(o){return fmtB(o.written);}},
+  {h:"Records", sk:function(o){return o.n;}, cell:function(o){return '<td class="mono" style="text-align:right">'+esc(nf(o.n))+'</td>';}},
+  {h:"First seen (UTC)", sk:function(o){return o.firstTs;}, cell:function(o){return '<td class="mono">'+esc(o.firstTs)+'</td>';}},
+  {h:"Last seen (UTC)", sk:function(o){return o.lastTs;}, cell:function(o){return '<td class="mono">'+esc(o.lastTs)+'</td>';}}
+];
+function aggCols(t){ return t.isNet?NCOLS:ACOLS; }
+function aggDefaultSort(t){ return t.isNet?4:4; }   // the primary byte column (Sent / Bytes read)
+function renderAggGrid(t){
+  var cols=aggCols(t);
+  if(t.sortKey===-2){ t.sortKey=aggDefaultSort(t); t.sortDir=-1; }
+  var counts={all:0,sus:0,system:0,userpath:0,lolbin:0,vol:0,ioc:0};
+  var view=[], q=QUERY, i;
+  for(i=0;i<t.rows.length;i++){ var o=t.rows[i];
+    if(q && o.blob.indexOf(q)<0) continue;
+    bumpCounts(counts,o,o.sid);
+    if(!passCat(o,o.sid)) continue;
+    view.push(o);
+  }
+  updateCatButtons(counts);
+  var sk=cols[t.sortKey].sk, dir=t.sortDir;
+  view.sort(function(a,b){ var x=sk(a),y=sk(b);
+    if(typeof x==="number"&&typeof y==="number") return (x-y)*dir;
+    x=String(x); y=String(y); return x<y?-dir:(x>y?dir:0); });
+  var shown=view.length>MAXROWS?MAXROWS:view.length;
+  var h="<thead><tr>";
+  for(var c=0;c<cols.length;c++){ var ar=(t.sortKey===c)?(t.sortDir>0?" ▲":" ▼"):""; h+='<th data-k="'+c+'">'+esc(cols[c].h)+ar+'</th>'; }
+  h+="</tr></thead><tbody>";
+  for(var r=0;r<shown;r++){ var oo=view[r];
+    h+='<tr data-i="'+r+'"'+(oo.sus?' class="sus"':'')+' style="cursor:pointer">';
+    for(var k2=0;k2<cols.length;k2++){ h+=cols[k2].cell(oo); }
+    h+="</tr>"; }
+  h+="</tbody>"; $("tbl").innerHTML=h;
+  var volNote=t.isNet?(fmtSize(sumField(view,"sent"))+" sent / "+fmtSize(sumField(view,"recv"))+" recv in view"):
+                      (fmtSize(sumField(view,"read"))+" read / "+fmtSize(sumField(view,"written"))+" written in view");
+  $("count").innerHTML=nf(view.length)+" aggregates"+(shown<view.length?(" (showing "+nf(shown)+")"):"")+" · "+volNote+((DFROM||DTO)?" (date-windowed)":"");
+  wireSort(t);
+  applyFreeze();
+  window.__viewAgg=view; window.__viewIdx=null; window.__viewTab=t;
+}
+function sumField(arr,f){ var s=0; for(var i=0;i<arr.length;i++) s+=arr[i][f]; return s; }
+function wireSort(t){
+  var ths=$("tbl").getElementsByTagName("th");
+  for(var i=0;i<ths.length;i++){ ths[i].onclick=function(){
+    var kk=parseInt(this.getAttribute("data-k"),10);
+    if(t.sortKey===kk) t.sortDir*=-1;
+    else { t.sortKey=kk; t.sortDir=((t.kind==="agg"&&kk>=4)||kk===-3)?-1:1; }   // byte/score columns default to descending
+    renderGrid();
+  }; }
+}
+function applyFreeze(){
+  var sc=$("tblScroll"); if(!sc) return;
+  var ths=$("tbl").getElementsByTagName("th"); var y=sc.scrollTop;
+  for(var i=0;i<ths.length;i++){ ths[i].style.top=y+"px"; }
+}
+
+/* ---------- export / copy ---------- */
+function cq(v){ v=(v==null)?"":String(v); return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
+function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
+  return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+function exportView(){
+  var t=window.__viewTab;
+  if(!t){ setStatus("Nothing to export","err"); return; }
+  var lines=[], i, dir=LASTOUTDIR||$("outDir").value;
+  var path=dir+"\\"+t.name.replace(/[^\w.-]/g,"_")+"_filtered_"+nowStamp()+".csv";
+  if(t.kind==="agg"){
+    var view=window.__viewAgg||[];
+    if(!view.length){ setStatus("Nothing to export","err"); return; }
+    var hd=t.isNet?["Executable","PathOrInfo","User","Sid","BytesSent","BytesReceived","Records","FirstSeen_UTC","LastSeen_UTC","Interfaces","Profiles","Tags","Score","Suspicious","Reasons"]
+                  :["Executable","PathOrInfo","User","Sid","BytesRead","BytesWritten","Records","FirstSeen_UTC","LastSeen_UTC","Tags","Score","Suspicious","Reasons"];
+    lines.push(hd.join(","));
+    for(i=0;i<view.length;i++){ var o=view[i];
+      var base=[cq(dispNameOf(o.exe)),cq(o.exe),cq(o.userDisp),cq(o.sid)];
+      var mid=t.isNet?[cq(Math.round(o.sent)),cq(Math.round(o.recv)),cq(o.n),cq(o.firstTs),cq(o.lastTs),cq(o.ifList),cq(o.profList)]
+                     :[cq(Math.round(o.read)),cq(Math.round(o.written)),cq(o.n),cq(o.firstTs),cq(o.lastTs)];
+      lines.push(base.concat(mid).concat([cq(o.tags.join("; ")),cq(o.score),cq(o.sus?"Yes":"No"),cq(o.reasons.join("; "))]).join(","));
+    }
+    try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(view.length)+" aggregates → "+path,"ok"); appendLog("Exported: "+path); }
+    catch(e1){ setStatus("Export failed: "+e1.message,"err"); }
+    return;
+  }
+  var idx=window.__viewIdx||[];
+  if(!t.head||!idx.length){ setStatus("Nothing to export","err"); return; }
+  var showTags=(SCOREN>0 && t.exeIdx>=0);
+  var hd2=[]; if(showTags){ hd2.push("Tags"); hd2.push("Score"); }
+  for(var c=0;c<t.head.length;c++) hd2.push(cq(t.head[c]));
+  lines.push(hd2.join(","));
+  for(i=0;i<idx.length;i++){ var rw=t.rows[idx[i]]; var cells=[];
+    if(showTags){ var sc=SCOREMAP[t.keys[idx[i]]]; cells.push(cq(sc?sc.tags.join("; "):"")); cells.push(cq(sc?sc.score:0)); }
+    for(var c2=0;c2<t.head.length;c2++) cells.push(cq(c2<rw.length?rw[c2]:""));
+    lines.push(cells.join(","));
+  }
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(idx.length)+" rows → "+path,"ok"); appendLog("Exported: "+path); }
+  catch(e2){ setStatus("Export failed: "+e2.message,"err"); }
+}
+function copyNotes(){
+  var t=window.__viewTab;
+  if(!t){ setStatus("Nothing to copy","err"); return; }
+  var out=[], i;
+  if(t.kind==="agg"){
+    // case-note lines (spec §6.5): exe (path) — X sent / Y recv over N hourly records, first → last UTC, user — tags
+    var view=(window.__viewAgg||[]).slice(0,500);
+    if(!view.length){ setStatus("Nothing to copy","err"); return; }
+    // ASCII separators only — case notes get pasted into tools that mangle Unicode
+    for(i=0;i<view.length;i++){ var o=view[i];
+      var vol=t.isNet?(fmtSize(o.sent)+" sent / "+fmtSize(o.recv)+" recv"):(fmtSize(o.read)+" read / "+fmtSize(o.written)+" written");
+      out.push(dispNameOf(o.exe)+(pathLike(o.exeL)?(" ("+o.exe+")"):"")+" | "+vol+" over "+nf(o.n)+" hourly records | "
+        +o.firstTs+" -> "+o.lastTs+" UTC | "+o.userDisp
+        +(o.tags.length?(" | tags: "+o.tags.join(" ")+" (score "+o.score+")"):""));
+    }
+    try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+out.length+" case-note lines","ok"); }
+    catch(e1){ setStatus("Copy failed: "+e1.message,"err"); }
+    return;
+  }
+  var idx=(window.__viewIdx||[]).slice(0,500);
+  if(!t.head||!idx.length){ setStatus("Nothing to copy","err"); return; }
+  out.push(t.head.join("\t"));
+  for(i=0;i<idx.length;i++) out.push(t.rows[idx[i]].join("\t"));
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+idx.length+" rows (TSV)","ok"); }
+  catch(e2){ setStatus("Copy failed: "+e2.message,"err"); }
+}
+
+/* ---------- detail pane (spec §6.4): hourly bars + cross-table presence for one aggregate ---------- */
+function pathHl(pL){
+  for(var t=0;t<IOCS.length;t++){ if(pL.indexOf(IOCS[t])>=0) return "hl-ioc"; }
+  return isUserPath(pL)?"hl-user":"";
+}
+function hourlySeries(src, key, isNet){
+  var hm={}; for(var c=0;c<src.head.length;c++) hm[trimStr(src.head[c]).toLowerCase()]=c;
+  function gi(nm){ return (nm in hm)?hm[nm]:-1; }
+  var iTs=src.tsIdx;
+  var iA=isNet?gi("bytessent"):gi("backgroundbytesread"), iA2=isNet?-1:gi("foregroundbytesread");
+  var iB=isNet?gi("bytesreceived"):gi("backgroundbyteswritten"), iB2=isNet?-1:gi("foregroundbyteswritten");
+  var buckets={}, order=[];
+  for(var r=0;r<src.rows.length;r++){
+    if(src.keys[r]!==key) continue;
+    var d=src.days[r];
+    if(DFROM&&(!d||d<DFROM)) continue;
+    if(DTO&&(!d||d>DTO)) continue;
+    var rw=src.rows[r];
+    var hh=String(cellv(rw,iTs)).substring(0,13);   // "yyyy-mm-dd hh" — SRUM records are ~hourly anyway
+    var b=buckets[hh]; if(!b){ b=buckets[hh]={h:hh+":00",a:0,b:0}; order.push(b); }
+    b.a+=numv(cellv(rw,iA))+(iA2>=0?numv(cellv(rw,iA2)):0);
+    b.b+=numv(cellv(rw,iB))+(iB2>=0?numv(cellv(rw,iB2)):0);
+  }
+  order.sort(function(x,y){ return x.h<y.h?-1:(x.h>y.h?1:0); });
+  return order;
+}
+function renderDetail(key){
+  var e=AGGOBJ[key]; if(!e) return;
+  DETKEY=key;
+  var o=e.net||e.app;
+  var hlc=pathHl(o.exeL);
+  var h='<div class="mono" style="font-size:14px;margin-bottom:6px"><b>'+esc(dispNameOf(o.exe))+'</b>'
+    +(pathLike(o.exeL)?('  <span class="muted">&mdash;</span>  <span class="'+hlc+'">'+esc(o.exe)+'</span>'):
+      (o.exe&&dispNameOf(o.exe)!==o.exe?('  <span class="muted">&mdash;</span>  '+esc(o.exe)):''))+'</div>';
+  h+='<div style="margin-bottom:6px">'+tagHtml(o)+'</div>';
+  if(o.reasons.length){ h+='<div style="font-size:12px;color:#ff9b9b;margin-bottom:6px">';
+    for(var q=0;q<o.reasons.length;q++) h+="&bull; "+esc(o.reasons[q])+"<br>"; h+='</div>'; }
+  h+='<div class="mono muted" style="font-size:11px;margin-bottom:8px">'
+    +'user '+esc(o.userDisp)+' &middot; '+esc(o.sid||"(no SID)")+(o.sidType?(' ('+esc(o.sidType)+')'):'')
+    +' &middot; first seen '+esc(o.firstTs||"—")+' &middot; last seen '+esc(o.lastTs||"—")+' (UTC)'
+    +((DFROM||DTO)?' &middot; <b>date-windowed</b>':'')+'</div>';
+  h+='<h3>Presence across tables</h3><div class="dl" style="max-height:110px">';
+  if(e.net) h+='<div>NetworkUsages: '+esc(fmtSize(e.net.sent))+' sent / '+esc(fmtSize(e.net.recv))+' received over '+esc(nf(e.net.n))+' records'
+    +(e.net.profList?('  &middot;  profiles: '+esc(e.net.profList)):'')+(e.net.ifList?('  &middot;  interfaces: '+esc(e.net.ifList)):'')+'</div>';
+  if(e.app) h+='<div>AppResourceUseInfo: '+esc(fmtSize(e.app.read))+' read / '+esc(fmtSize(e.app.written))+' written over '+esc(nf(e.app.n))+' records</div>';
+  for(var i=0;i<TABS.length;i++){ var t=TABS[i];
+    if(t.kind!=="csv"||t.state!=="ready") continue;
+    var nm=t.name.toLowerCase(); if(nm==="networkusages"||nm==="appresourceuseinfo") continue;
+    var cnt=0; for(var r=0;r<t.keys.length;r++){ if(t.keys[r]===key) cnt++; }
+    if(cnt) h+='<div>'+esc(t.name)+': '+esc(nf(cnt))+' rows <span class="muted">(open the tab and search to inspect)</span></div>';
+  }
+  h+='</div>';
+  var src=e.net?findTab("NetworkUsages"):findTab("AppResourceUseInfo");
+  if(src&&src.state==="ready"){
+    var series=hourlySeries(src, key, !!e.net);
+    var lab=e.net?"bar = sent &middot; values = sent / received":"bar = read &middot; values = read / written";
+    h+='<h3>Hourly activity &mdash; '+series.length+' buckets ('+lab+')</h3><div class="dl" style="max-height:240px">';
+    var mx=0; for(i=0;i<series.length;i++){ if(series[i].a>mx) mx=series[i].a; }
+    for(i=0;i<series.length;i++){ var s=series[i];
+      h+='<div><span style="display:inline-block;width:118px">'+esc(s.h)+'</span>'
+        +'<span class="btrack" style="width:34%"><span class="bfill'+(o.sus?' warn':'')+'" style="width:'+(mx?(s.a/mx*100).toFixed(1):0)+'%"></span></span>'
+        +' <span class="muted">'+esc(fmtSize(s.a))+' / '+esc(fmtSize(s.b))+'</span></div>'; }
+    h+='</div>';
+  }
+  $("detBody").innerHTML=h;
+  showEl("detailCard",true);
+}
+function closeDetail(){ DETKEY=null; showEl("detailCard",false); var d=$("detBody"); if(d) d.innerHTML=""; }
+/* export the open aggregate's per-hour activity: merges network (sent/recv) and disk (read/written)
+   buckets by hour so one CSV carries every hourly series this executable+SID has. Honors the date window. */
+function exportHourly(){
+  if(!DETKEY||!AGGOBJ[DETKEY]){ setStatus("Open a record first (click a row), then export its hourly activity","err"); return; }
+  var e=AGGOBJ[DETKEY], o=e.net||e.app;
+  var nuT=e.net?findTab("NetworkUsages"):null, arT=e.app?findTab("AppResourceUseInfo"):null;
+  var haveNet=!!(nuT&&nuT.state==="ready"), haveApp=!!(arT&&arT.state==="ready");
+  if(!haveNet&&!haveApp){ setStatus("No hourly source table is loaded for this record","err"); return; }
+  var merged={}, order=[], i, s;
+  function slot(hr){ var m=merged[hr]; if(!m){ m=merged[hr]={h:hr,sent:0,recv:0,read:0,written:0}; order.push(m); } return m; }
+  if(haveNet){ var ns=hourlySeries(nuT, DETKEY, true); for(i=0;i<ns.length;i++){ s=slot(ns[i].h); s.sent=ns[i].a; s.recv=ns[i].b; } }
+  if(haveApp){ var as=hourlySeries(arT, DETKEY, false); for(i=0;i<as.length;i++){ s=slot(as[i].h); s.read=as[i].a; s.written=as[i].b; } }
+  if(!order.length){ setStatus("No hourly records for this executable in the current date window","err"); return; }
+  order.sort(function(x,y){ return x.h<y.h?-1:(x.h>y.h?1:0); });
+  var cols=["Hour_UTC"]; if(haveNet){ cols.push("BytesSent"); cols.push("BytesReceived"); } if(haveApp){ cols.push("BytesRead"); cols.push("BytesWritten"); }
+  cols.push("Executable"); cols.push("Path"); cols.push("Sid"); cols.push("User");
+  var lines=[cols.join(",")];
+  for(i=0;i<order.length;i++){ s=order[i]; var row=[cq(s.h)];
+    if(haveNet){ row.push(cq(Math.round(s.sent))); row.push(cq(Math.round(s.recv))); }
+    if(haveApp){ row.push(cq(Math.round(s.read))); row.push(cq(Math.round(s.written))); }
+    row.push(cq(dispNameOf(o.exe))); row.push(cq(o.exe)); row.push(cq(o.sid)); row.push(cq(o.userDisp));
+    lines.push(row.join(","));
+  }
+  var dir=LASTOUTDIR||$("outDir").value;
+  var sidShort=String(o.sid||"nosid").replace(/^S-1-5-21-.*-(\d+)$/,"$1").replace(/[^\w-]/g,"_");
+  var path=dir+"\\"+exeBase(baseName(o.exeL)).replace(/[^\w.-]/g,"_")+"_"+sidShort+"_hourly_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n"));
+    setStatus("Exported "+nf(order.length)+" hourly rows for "+dispNameOf(o.exe)+" → "+path,"ok"); appendLog("Exported hourly: "+path); }
+  catch(er){ setStatus("Export failed: "+er.message,"err"); }
+}
+function copyDetail(){
+  if(!DETKEY||!AGGOBJ[DETKEY]){ setStatus("No record open","err"); return; }
+  var e=AGGOBJ[DETKEY], o=e.net||e.app, out=[];
+  out.push(dispNameOf(o.exe)+(pathLike(o.exeL)?(" ("+o.exe+")"):""));
+  out.push("user "+o.userDisp+" | "+(o.sid||"no SID")+(o.sidType?(" ("+o.sidType+")"):""));
+  out.push("tags: "+(o.tags.length?o.tags.join(", "):"none")+" | score "+o.score);
+  for(var q=0;q<o.reasons.length;q++) out.push("  - "+o.reasons[q]);
+  if(e.net) out.push("network: "+fmtSize(e.net.sent)+" sent / "+fmtSize(e.net.recv)+" recv over "+nf(e.net.n)+" hourly records, "+e.net.firstTs+" -> "+e.net.lastTs+" UTC"+(e.net.profList?(" | profiles: "+e.net.profList):""));
+  if(e.app) out.push("disk: "+fmtSize(e.app.read)+" read / "+fmtSize(e.app.written)+" written over "+nf(e.app.n)+" records, "+e.app.firstTs+" -> "+e.app.lastTs+" UTC");
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Record copied to clipboard","ok"); }
+  catch(er){ setStatus("Copy failed: "+er.message,"err"); }
+}
+
+/* ---------- IOC list ---------- */
+function applyIocs(){
+  var parts=String($("iocBox").value).split(/[\r\n,;]+/), out=[];
+  for(var i=0;i<parts.length;i++){ var s=trimStr(parts[i]).toLowerCase(); if(s) out.push(s); }
+  IOCS=out;
+  $("iocInfo").innerHTML=IOCS.length?(nf(IOCS.length)+" term(s) active"):"no terms";
+  rescoreAggs();   // rescore + rebuild SCOREMAP + re-render (raw tabs inherit)
+  setStatus(IOCS.length?("IOC list applied — "+IOCS.length+" term(s), aggregates rescored"):"IOC list cleared","ok");
+}
+
+/* ---------- wiring ---------- */
+function init(){
+  try{ window.resizeTo(1320,900); }catch(e){}
+  $("appver").innerHTML="&middot; v"+APP_VERSION;
+  try{ document.title="SrumECmd Wrapper v"+APP_VERSION; }catch(e){}
+  $("tblScroll").onscroll=applyFreeze;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  // default output = "Exported CSVs" next to the .hta (create it if missing); fall back to temp if app folder unknown
+  var expBase=htaFolder()||fso.GetSpecialFolder(2)+"";
+  var expDir=expBase+"\\Exported CSVs";
+  try{ if(!fso.FolderExists(expDir)) fso.CreateFolder(expDir); }catch(e){}
+  $("outDir").value=expDir;
+
+  var zoom=0.9;
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.1,2.6); document.body.style.zoom=zoom; };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.1,0.5); document.body.style.zoom=zoom; };
+
+  $("verBtn").onclick=checkVersion;
+  $("updBtn").onclick=downloadLatest;
+  $("openDirBtn").onclick=openDir;
+  $("procBtn").onclick=processSrum;
+  $("inMode").onchange=function(){ showEl("hiveRow", this.value==="f"); };
+  $("loadSelBtn").onclick=function(){ var v=$("producedSel").value; if(!v) return;
+    PENDNOTE=""; setStatus("Loading "+v,"muted"); window.setTimeout(function(){ loadCsvFile(v); },50); };
+  // directory mode → native folder picker (an <input type=file> cannot select a folder);
+  // single-file mode → file picker for SRUDB.dat
+  $("browseBtn").onclick=function(){
+    if($("inMode").value==="d"){ var p=pickFolder("Select the collection tree / folder that contains SRUDB.dat (e.g. …\\Windows\\System32)"); if(p) $("inPath").value=p; }
+    else $("inPick").click();
+  };
+  $("inPick").onchange=function(){ if(this.value) $("inPath").value=this.value; };
+  $("hiveBtn").onclick=function(){ $("hivePick").click(); };
+  $("hivePick").onchange=function(){ if(this.value) $("hivePath").value=this.value; };
+  $("loadBtn").onclick=function(){ $("csvPick").click(); };
+  $("csvPick").onchange=function(){ if(this.value){ PENDNOTE=""; setStatus("Loading "+this.value,"muted"); loadCsvFile(this.value); } };
+  $("logToggle").onclick=function(){ var l=$("log");
+    if(l.style.display==="none"||!l.style.display){
+      if(!trimStr(l.innerHTML.replace(/<[^>]*>/g,""))){ l.innerHTML='<span class="muted">(empty — SrumECmd output appears here after a run finishes. While a run is in progress a console window shows live progress.)</span>'; l.setAttribute("data-ph","1"); }
+      l.style.display="block"; this.innerHTML="Hide log";
+    } else { l.style.display="none"; this.innerHTML="Show log"; } };
+
+  $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer);
+    qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); renderGrid(); },150); };
+  // date change re-aggregates the summary tabs to the window (rebuildAggs re-renders); csv tabs just re-filter
+  $("dfrom").onchange=function(){ DFROM=dayNum(this.value); rebuildAggs(); renderGrid(); };
+  $("dto").onchange=function(){ DTO=dayNum(this.value); rebuildAggs(); renderGrid(); };
+  $("clearBtn").onclick=function(){ $("q").value=""; $("dfrom").value=""; $("dto").value="";
+    QUERY=""; DFROM=0; DTO=0; CURCAT="all"; rebuildAggs(); renderGrid(); };
+
+  var catBtns=$("cats").getElementsByTagName("button");
+  for(var cb=0;cb<catBtns.length;cb++){ if(catBtns[cb].getAttribute("data-cat")){ catBtns[cb].onclick=function(){
+    CURCAT=this.getAttribute("data-cat"); renderGrid();
+  }; } }
+
+  $("iocBtn").onclick=function(){ var w=$("iocWrap"); showEl("iocWrap", /\bhide\b/.test(w.className)); };
+  $("iocApply").onclick=applyIocs;
+  $("iocLoad").onclick=function(){ $("iocPick").click(); };
+  $("iocPick").onchange=function(){ if(this.value){
+    try{ $("iocBox").value=readUtf8(this.value); applyIocs(); }
+    catch(e){ setStatus("Could not read IOC file: "+e.message,"err"); } } };
+  $("detClose").onclick=closeDetail;
+  $("detCopy").onclick=copyDetail;
+  $("detHourly").onclick=exportHourly;
+
+  /* click delegation: overview data-q → jump to Network Summary filtered; any grid row → aggregate detail */
+  document.onclick=function(ev){ ev=ev||window.event; var tg=ev.target||ev.srcElement;
+    var q=tg&&tg.getAttribute?tg.getAttribute("data-q"):null;
+    if(q){
+      var ns=findTab("Network Summary");
+      if(ns){ $("q").value=q; QUERY=q.toLowerCase(); selectTab(tabIndex(ns)); }
+      return;
+    }
+    var n=tg;
+    while(n && n.tagName!=="TR"){ n=n.parentNode; if(n&&n.tagName==="TABLE"){ n=null; break; } }
+    if(!(n&&n.getAttribute)) return;
+    var di=n.getAttribute("data-i");
+    if(di==null||di==="") return;
+    var ix=parseInt(di,10), tab=window.__viewTab, key=null;
+    if(!tab) return;
+    if(tab.kind==="agg"){ var v=window.__viewAgg||[]; if(ix>=0&&ix<v.length) key=v[ix].key; }
+    else { var ia=window.__viewIdx||[]; if(ix>=0&&ix<ia.length&&tab.keys) key=tab.keys[ia[ix]]; }
+    if(key==null||!AGGOBJ[key]) return;   // no aggregate behind this row (e.g. table without ExeInfo scoring)
+    renderDetail(key);
+    var trs=$("tbl").getElementsByTagName("tr");
+    for(var z=0;z<trs.length;z++){ if(!trs[z].getAttribute) continue;
+      var zd=trs[z].getAttribute("data-i"); if(zd==null||zd==="") continue;
+      var was=/\bsus\b/.test(trs[z].className);
+      trs[z].className=(parseInt(zd,10)===ix)?((was?"sus ":"")+"sel"):(was?"sus":"");
+    }
+  };
+  $("exportBtn").onclick=exportView;
+  $("copyBtn").onclick=copyNotes;
+
+  evaluateTooling(true);
+  if(isNetworkPath(htaFolder()))
+    appendLog("Heads-up: this app is running from a network location ("+htaFolder()+"). Windows zone policy may block the UTF-8 file reader there; the app falls back to ANSI IO automatically, but for full fidelity copy the folder to a local path (e.g. C:\\Tools\\SrumECmd).");
+}
+function isNetworkPath(p){
+  try{ if(/^\\\\/.test(p)) return true;
+    var fso=new ActiveXObject("Scripting.FileSystemObject");
+    return fso.GetDrive(fso.GetDriveName(p)).DriveType===3;   // 3 = Remote
+  }catch(e){ return false; }
+}
+
+window.onload=init;
+</script>
+</body>
+</html>

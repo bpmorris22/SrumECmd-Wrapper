@@ -1,0 +1,9 @@
+# never publish case data or tool binaries
+*.csv
+Exported CSVs/
+SrumECmd.exe
+SrumECmd.dll
+SrumECmd.runtimeconfig.json
+*.log
+SRUDB.dat
+SOFTWARE
