@@ -245,7 +245,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.4.0";
+var APP_VERSION = "1.5.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -628,7 +628,42 @@ function writeRunInfo(outdir, input, freshFiles){
     arr.push({app:APP_NAME, appVersion:APP_VERSION, host:sanitHost($("hostName").value),
               input:String(input||""), finishedUtc:iso, files:names});
     writeUtf8(p, JSON.stringify(arr,null,2));
+    RUNINFO_LAST={path:p, iso:iso};
   }catch(e){}
+}
+var RUNINFO_LAST=null;   // the entry writeRunInfo just appended — patched with a triage summary after the auto-load
+function patchRunInfoSummary(summary){
+  /* second-phase runinfo write (family, 2026-07-07): the scored rows only exist after the
+     auto-load that follows a run, so the headline triage numbers are patched onto the entry
+     writeRunInfo appended moments earlier. The Artifact-Finder renders these in its
+     per-host triage summary. Best-effort — a missing summary just shows as counts-only. */
+  try{
+    if(!RUNINFO_LAST || !summary) return;
+    var arr=JSON.parse(readUtf8(RUNINFO_LAST.path));
+    if(!arr || arr.length==null) return;
+    for(var i=arr.length-1;i>=0;i--){ var e=arr[i];
+      if(e && e.app===APP_NAME && e.finishedUtc===RUNINFO_LAST.iso){ e.summary=summary; break; } }
+    writeUtf8(RUNINFO_LAST.path, JSON.stringify(arr,null,2));
+  }catch(e){}
+}
+function buildRunSummary(){
+  /* headline triage numbers from the SCORED AGGREGATES (one per executable+SID, the wrapper's
+     own scoring unit — raw table rows only inherit these): entries, wrapper-flagged count
+     (sus = score>=2), max score, top-3 "name (score)", plus total MB sent (the exfil headline). */
+  try{
+    if(!SCOREN) return null;
+    var flagged=0, maxScore=0, top=[], sentTotal=0, list=[], k, i;
+    for(k in AGGOBJ){ if(!AGGOBJ.hasOwnProperty(k)) continue;
+      var e=AGGOBJ[k], o=e.net||e.app; if(!o) continue;
+      list.push(o);
+      if(o.score>maxScore) maxScore=o.score;
+      if(o.sus) flagged++;
+      if(e.net) sentTotal+=e.net.sent;
+    }
+    list.sort(function(a,b){ return b.score-a.score; });
+    for(i=0;i<list.length && top.length<3;i++){ if(list[i].score>0) top.push(dispNameOf(list[i].exe)+" ("+list[i].score+")"); }
+    return {entries:list.length, flagged:flagged, maxScore:maxScore, top:top, bytesOutMB:Math.round(sentTotal/1048576)};
+  }catch(e){ return null; }
 }
 
 function processSrum(){
@@ -700,6 +735,8 @@ function processSrumDone(log,outdir,before,wasRepair){
     PENDNOTE=" NOTE: no SOFTWARE hive was found, so network profile names are blank — in directory mode point one level higher (e.g. …\\System32 instead of …\\System32\\SRU) so config\\SOFTWARE is inside the tree.";
   setStatus("Produced "+fresh.length+" CSV(s)"+(wasRepair?" from the repaired copy":"")+" — opening tables."+PENDNOTE, PENDNOTE?"muted":"ok");
   loadCsvFile(main.path);
+  // NB: unlike the sibling wrappers, no patchRunInfoSummary() here — this load is ASYNC (chunked
+  // parse → rebuildAggs → rescoreAggs), so the one-shot triage patch fires at the end of rescoreAggs.
 }
 
 /* ---------- ESE failure triage + repair-on-copy (spec §7.1; all three flavors verified on real collections) ---------- */
@@ -1075,6 +1112,12 @@ function rescoreAggs(){
     }
   }
   var k; for(k in SCOREMAP){ if(SCOREMAP.hasOwnProperty(k)) SCOREN++; }
+  // one-shot after a fresh run: the aggregates are scored now — add the triage headline to the
+  // runinfo entry (can't happen in processSrumDone: the auto-load parses in async chunks)
+  if(RUNINFO_LAST && !RUNINFO_LAST.patched){
+    var rsum=buildRunSummary();
+    if(rsum){ RUNINFO_LAST.patched=true; patchRunInfoSummary(rsum); }
+  }
   renderTabbar();
   renderGrid();
   if(DETKEY){ if(AGGOBJ[DETKEY]) renderDetail(DETKEY); else closeDetail(); }
@@ -1825,7 +1868,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><code>&lt;outDir&gt;</code> — CSV output directory (optional). &nbsp; <code>/auto</code> — process immediately.</li>
       <li><b>Target hostname</b> is required before processing — it names the output folder <code>_Processed\&lt;host&gt;\SrumECmd</code> next to this app (family convention shared with the Artifact-Finder). It is guessed from <code>Collection-&lt;host&gt;-…</code> paths, a passed <code>_Processed\&lt;host&gt;\</code> outDir, or this machine's name for live paths — overwrite the guess if it's wrong.</li>
       <li><b>Shared IOC list</b>: an <code>IOC.txt</code> next to this app (one term per line, <code>#</code> comments) is auto-merged into the IOC box at launch — one list covers the whole toolkit. Terms you paste locally are kept.</li>
-      <li>After every successful run a <code>runinfo.json</code> provenance entry (app, host, input path, files) is appended in the output folder — the Artifact-Finder uses it to show processed state even for runs done outside the finder.</li>
+      <li>After every successful run a <code>runinfo.json</code> provenance entry (app, host, input path, files) is appended in the output folder, including a <b>triage summary</b> (entries, flagged count, max score, top hits) — the Artifact-Finder shows these per host in its inventory, even for runs done outside the finder.</li>
     </ul>
     <h3>Notes</h3>
     <ul>

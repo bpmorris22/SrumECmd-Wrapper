@@ -81,7 +81,7 @@ mshta.exe "SrumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto]
 - `<outDir>` — CSV output directory (optional; defaults to `_Processed\<host>\SrumECmd` next to the app).
 - **Target hostname** is required before processing — it names the `_Processed\<host>\SrumECmd` output folder next to the app (family convention shared with the DFIR-Artifact-Finder, so processed evidence is visible per host per tool). Guessed from `Collection-<host>-…` paths, a passed `_Processed\<host>\` outDir, or this machine's name for live paths — overwrite the guess if it's wrong.
 - **Shared IOC list** — an `IOC.txt` next to the app (one term per line, `#` comments) is auto-merged into the IOC box at launch; one list covers the whole toolkit and terms you paste locally are kept.
-- **Run provenance** — every successful run appends a `runinfo.json` entry (app, host, input path, files) in the output folder; the DFIR-Artifact-Finder uses it to show processed state even for standalone runs.
+- **Run provenance + triage summary** — every successful run appends a `runinfo.json` entry (app, host, input path, files) in the output folder, including a triage summary (entries, flagged count, max score, top hits, MB sent); the DFIR-Artifact-Finder shows these per host in its inventory, even for standalone runs.
 - `/auto` — process immediately.
 
 ## Credits
