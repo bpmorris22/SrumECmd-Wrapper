@@ -27,6 +27,7 @@ SRUM is the only native Windows artifact that **quantifies per-application netwo
 - **Suspicion scoring** tuned for SRUM (see table below). Suspicious aggregates are shaded; raw table rows inherit their aggregate's tags; every tag explains itself on hover.
 - **IOC / keyword list** — paste or load terms; matched case-insensitively against executable paths, SIDs, users, interfaces and network profile names, rescoring live (+3 per hit).
 - **Filters** — category buttons with live counts (All / Suspicious / SYSTEM / User-path / LOLBIN / High-volume / IOC hits), free-text search across all columns, and a UTC date range that also re-aggregates the summary views to the window.
+- **Resizable columns** — drag a column header's right edge to resize it; widths persist per view (in a small settings sidecar next to the `.hta`); double-click the edge to reset all widths.
 - **Overview dashboard** — dataset stats plus Top talkers, score-ranked Suspicious, and a SYSTEM-network hotlist; all recomputed under active filters, all clickable.
 - **Detail pane** — click any row for the full path, tags with reasoning, presence across every table (network sent/received, disk read/written, row counts elsewhere), and an **hourly activity mini-timeline** that makes exfil windows and beaconing cadence visible at a glance.
 - **Reporting** — export any filtered view (table or summary) to CSV, export a **single process's per-hour activity** (network and disk series merged) to CSV, or copy formatted case-note lines to the clipboard.

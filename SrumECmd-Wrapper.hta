@@ -81,6 +81,8 @@
   th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
   th:hover{color:#58a6ff}
+  .cgrip{position:absolute;top:0;right:-4px;width:8px;height:100%;cursor:col-resize;z-index:6}
+  .cgrip:hover{background:#58a6ff;filter:alpha(opacity=45);opacity:.45}
   td{max-width:360px}
   tr.sus td{background:#2a1416}
   tr.sus td.first{border-left:3px solid #ff6b6b}
@@ -241,7 +243,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.1.2";
+var APP_VERSION = "1.2.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -268,6 +270,11 @@ var AGGWIN = "?";                    // date window the aggregates were built fo
 var PENDNOTE = "";                   // note appended to the next "Loaded N rows" status (e.g. missing-hive warning)
 var BUSY = false;                    // a SrumECmd run is in progress
 var PRODUCED = [];                   // CSVs produced by the last run
+var SETTINGS = {};                   // persisted sidecar (currently: colw = per-view column widths)
+var COLWS = {};                      // per-view column widths: { "<tabName>|<thCount>": [px,...] }
+var COLW = null;                     // the active view's width array once the user has resized
+var COLKEY = "";                     // key into COLWS for the grid currently rendered
+var DRAG = null;                     // active column-drag state
 
 /* suspicion knobs (spec §6.3; path heuristics inherited from PECmd-Wrapper, tuned on real incidents) */
 var USERPATHS = ["\\users\\","\\appdata\\","\\temp\\","\\downloads\\","\\programdata\\","\\perflogs\\","\\windows\\temp\\","\\$recycle.bin\\","\\public\\"];
@@ -1149,6 +1156,7 @@ function renderCsvGrid(t){
   h+="</tbody>"; $("tbl").innerHTML=h;
   $("count").innerHTML=nf(idx.length)+" rows"+(shown<idx.length?(" (showing "+nf(shown)+")"):"");
   wireSort(t);
+  setupColResize();
   applyFreeze();
   window.__viewIdx=idx; window.__viewTab=t;
 }
@@ -1209,13 +1217,16 @@ function renderAggGrid(t){
                       (fmtSize(sumField(view,"read"))+" read / "+fmtSize(sumField(view,"written"))+" written in view");
   $("count").innerHTML=nf(view.length)+" aggregates"+(shown<view.length?(" (showing "+nf(shown)+")"):"")+" · "+volNote+((DFROM||DTO)?" (date-windowed)":"");
   wireSort(t);
+  setupColResize();
   applyFreeze();
   window.__viewAgg=view; window.__viewIdx=null; window.__viewTab=t;
 }
 function sumField(arr,f){ var s=0; for(var i=0;i<arr.length;i++) s+=arr[i][f]; return s; }
 function wireSort(t){
   var ths=$("tbl").getElementsByTagName("th");
-  for(var i=0;i<ths.length;i++){ ths[i].onclick=function(){
+  for(var i=0;i<ths.length;i++){ ths[i].onclick=function(ev){
+    ev=ev||window.event; var tg=ev.target||ev.srcElement;
+    if(tg && /\bcgrip\b/.test(tg.className+"")) return;   // resize-grip clicks never sort
     var kk=parseInt(this.getAttribute("data-k"),10);
     if(t.sortKey===kk) t.sortDir*=-1;
     else { t.sortKey=kk; t.sortDir=((t.kind==="agg"&&kk>=4)||kk===-3)?-1:1; }   // byte/score columns default to descending
@@ -1226,6 +1237,94 @@ function applyFreeze(){
   var sc=$("tblScroll"); if(!sc) return;
   var ths=$("tbl").getElementsByTagName("th"); var y=sc.scrollTop;
   for(var i=0;i<ths.length;i++){ ths[i].style.top=y+"px"; }
+}
+
+/* ---------- settings sidecar (currently just per-view column widths) ---------- */
+function settingsPath(){ var d=htaFolder(); if(!d){ try{ d=new ActiveXObject("Scripting.FileSystemObject").GetSpecialFolder(2)+""; }catch(e){ d=""; } }
+  return d+"\\SrumECmd-Wrapper.settings.json"; }
+function loadSettings(){
+  SETTINGS={};
+  try{ if(fileExists(settingsPath())) SETTINGS=JSON.parse(readUtf8(settingsPath()))||{}; }catch(e){ SETTINGS={}; }
+  if(SETTINGS.colw) COLWS=SETTINGS.colw;
+}
+function saveSettings(){
+  SETTINGS.colw=COLWS;
+  try{ writeUtf8(settingsPath(), JSON.stringify(SETTINGS,null,2)); }catch(e){}
+}
+
+/* ---------- resizable columns (ported from DFIR-Artifact-Finder v0.2.1) ----------
+   Drag a header's right edge to resize; double-click the edge to reset all widths.
+   Widths persist per view — every tab (and the with/without-Tags variants of a CSV tab)
+   has its own column set, so COLWS is keyed "<tabName>|<columnCount>"; a stored array
+   whose length no longer matches the rendered header is ignored (auto-reset). */
+function curZoom(){
+  try{ var el=$("content");
+    var z=parseFloat(el.style.zoom||(el.currentStyle&&el.currentStyle.zoom)||"");
+    if(!z && window.getComputedStyle) z=parseFloat(getComputedStyle(el).zoom);
+    return (z&&z>0)?z:1;
+  }catch(e){ return 1; }
+}
+function colKeyOf(nths){
+  var t=(CURTAB>=0&&CURTAB<TABS.length)?TABS[CURTAB]:null;
+  return (t?String(t.name).toLowerCase():"tbl")+"|"+nths;
+}
+function setupColResize(){
+  var tbl=$("tbl"); if(!tbl) return;
+  var ths=tbl.getElementsByTagName("th"); if(!ths.length) return;
+  COLKEY=colKeyOf(ths.length);
+  var saved=COLWS[COLKEY];
+  COLW=(saved && saved.length===ths.length)?saved:null;
+  if(COLW){
+    tbl.style.tableLayout="fixed"; tbl.style.width="auto";
+    for(var j=0;j<ths.length;j++) ths[j].style.width=COLW[j]+"px";
+  } else { tbl.style.tableLayout=""; tbl.style.width=""; }   // #tbl is reused across tabs — clear stale fixed layout
+  for(var i=0;i<ths.length;i++){
+    var g=document.createElement("div");
+    g.className="cgrip"; g.setAttribute("data-ci",String(i));
+    g.title="Drag to resize column — double-click to reset all widths";
+    g.onmousedown=gripDown; g.ondblclick=gripReset;
+    ths[i].appendChild(g);
+  }
+}
+function gripDown(e){
+  e=e||window.event;
+  var ci=parseInt(this.getAttribute("data-ci"),10);
+  var tbl=$("tbl"), ths=tbl.getElementsByTagName("th");
+  if(isNaN(ci)||ci<0||ci>=ths.length) return false;
+  if(!COLW || COLW.length!==ths.length){          // first drag: freeze the browser's current widths
+    COLW=[]; for(var i=0;i<ths.length;i++) COLW.push(ths[i].offsetWidth);
+    COLWS[COLKEY]=COLW;
+    tbl.style.tableLayout="fixed"; tbl.style.width="auto";
+    for(var j=0;j<ths.length;j++) ths[j].style.width=COLW[j]+"px";
+  }
+  DRAG={ci:ci, x:(e.clientX||0), w:COLW[ci], th:ths[ci], z:curZoom()};
+  document.onmousemove=gripMove; document.onmouseup=gripUp;
+  document.onselectstart=function(){ return false; };
+  if(e.preventDefault) e.preventDefault(); e.returnValue=false;
+  if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true;
+  return false;
+}
+function gripMove(e){
+  e=e||window.event; if(!DRAG) return false;
+  var w=Math.round(DRAG.w+((e.clientX||0)-DRAG.x)/DRAG.z);
+  if(w<40) w=40; if(w>1600) w=1600;
+  COLW[DRAG.ci]=w; DRAG.th.style.width=w+"px";
+  return false;
+}
+function gripUp(){
+  document.onmousemove=null; document.onmouseup=null; document.onselectstart=null;
+  if(DRAG){ DRAG=null; COLWS[COLKEY]=COLW; try{ saveSettings(); }catch(e){} }
+}
+function gripReset(e){
+  e=e||window.event;
+  document.onmousemove=null; document.onmouseup=null; document.onselectstart=null; DRAG=null;
+  COLW=null; try{ delete COLWS[COLKEY]; }catch(ed){ COLWS[COLKEY]=null; }
+  try{ saveSettings(); }catch(er){}
+  var tbl=$("tbl"); if(tbl){ tbl.style.tableLayout=""; tbl.style.width=""; }
+  renderGrid();
+  setStatus("Column widths reset","ok");
+  if(e){ if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true; }
+  return false;
 }
 
 /* ---------- export / copy ---------- */
@@ -1420,6 +1519,7 @@ function init(){
   try{ window.resizeTo(1320,900); }catch(e){}
   $("appver").innerHTML="&middot; v"+APP_VERSION;
   try{ document.title="SrumECmd Wrapper v"+APP_VERSION; }catch(e){}
+  loadSettings();
   $("tblScroll").onscroll=applyFreeze;
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   // default output = "Exported CSVs" next to the .hta (create it if missing); fall back to temp if app folder unknown
@@ -1485,6 +1585,7 @@ function init(){
 
   /* click delegation: overview data-q → jump to Network Summary filtered; any grid row → aggregate detail */
   document.onclick=function(ev){ ev=ev||window.event; var tg=ev.target||ev.srcElement;
+    if(tg && /\bcgrip\b/.test(tg.className+"")) return;   // column-resize grips never bubble into row actions
     var q=tg&&tg.getAttribute?tg.getAttribute("data-q"):null;
     if(q){
       var ns=findTab("Network Summary");
@@ -1646,6 +1747,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     <h3>Notes</h3>
     <ul>
       <li>Network-summary and data-transfer views, IOC/keyword list, and a detail pane are built in. All timestamps UTC.</li>
+      <li>Drag a column header's right edge to resize it (widths persist per view); double-click the edge to reset all widths.</li>
       <li>SRUM is parsed through the host's local ESE engine — a <code>SRUDB.dat</code> newer than the analysis host's Windows build must be parsed on an equal-or-newer Windows.</li>
     </ul>
     <p class="muted" style="font-size:11px">MIT © 2026 Ben Morris — click the link above for the full README &amp; releases.</p>
