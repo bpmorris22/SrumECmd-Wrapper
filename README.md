@@ -69,6 +69,17 @@ Score ≥ 2 marks an aggregate suspicious. Scoring is computed per executable + 
 - **ESE engine version:** SrumECmd parses through the host's local ESE engine. A `SRUDB.dat` whose on-disk format is newer than the analysis host's Windows build cannot be opened locally, and `esentutl` repair fails the same way — parse it on an equal-or-newer Windows build (a VM works), or collect SRUM with an engine-independent tool. Compare `esentutl /mh SRUDB.dat` ("attached by") against the host.
 - Table display caps at 6,000 rows for responsiveness; exports always write the full filtered set.
 
+## Command line
+
+The wrapper can be launched with arguments so an artifact-finder (or a shortcut) opens it already pointed at an artifact:
+
+```
+mshta.exe "SrumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto]
+```
+- `<input>` — a `.csv` (auto-loaded into the viewer) or an `SRUDB.dat` file / collection directory (prefilled; processed if `/auto`).
+- `<outDir>` — CSV output directory (optional).
+- `/auto` — process immediately.
+
 ## Credits
 
 - [Eric Zimmerman](https://ericzimmerman.github.io/) for SrumECmd and the EZ Tools suite — this is an unaffiliated wrapper around his parser; all parsing credit is his.

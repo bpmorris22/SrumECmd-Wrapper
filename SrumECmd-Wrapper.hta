@@ -52,7 +52,8 @@
 -->
 <style>
   html{margin:0;height:100%;background:#0d1117}
-  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px;zoom:0.9}
+  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
+  #content{zoom:0.9}
   a{color:#58a6ff}
   .mono{font-family:Consolas,"Courier New",monospace}
   .muted{color:#8b949e}
@@ -126,7 +127,7 @@
   </span>
 </header>
 
-<div class="wrap">
+<div class="wrap" id="content">
 
   <!-- CONTROL PANEL -->
   <div class="card">
@@ -229,7 +230,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.0.0";
+var APP_VERSION = "1.1.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -1417,8 +1418,12 @@ function init(){
   $("outDir").value=expDir;
 
   var zoom=0.9;
-  $("fup").onclick=function(){ zoom=Math.min(zoom+0.1,2.6); document.body.style.zoom=zoom; };
-  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.1,0.5); document.body.style.zoom=zoom; };
+  var zContent=$("content");
+  function applyZoom(){ zContent.style.zoom=zoom; var p=Math.round(zoom*100)+"%";
+    $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
+  applyZoom();
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
 
   $("verBtn").onclick=checkVersion;
   $("updBtn").onclick=downloadLatest;
@@ -1496,7 +1501,8 @@ function init(){
   $("exportBtn").onclick=exportView;
   $("copyBtn").onclick=copyNotes;
 
-  evaluateTooling(true);
+  var __cli=parseCli(); var __had=false; try{ __had=applyCli(__cli); }catch(eC){ appendLog("CLI parse error: "+eC.message); }
+  evaluateTooling(!__had);
   if(isNetworkPath(htaFolder()))
     appendLog("Heads-up: this app is running from a network location ("+htaFolder()+"). Windows zone policy may block the UTF-8 file reader there; the app falls back to ANSI IO automatically, but for full fidelity copy the folder to a local path (e.g. C:\\Tools\\SrumECmd).");
 }
@@ -1506,6 +1512,34 @@ function isNetworkPath(p){
     return fso.GetDrive(fso.GetDriveName(p)).DriveType===3;   // 3 = Remote
   }catch(e){ return false; }
 }
+
+/* ---------- command-line invocation: "<inputOrCsv>" ["<outDir>"] [/auto] ----------
+   .csv → auto-load into the viewer; an SRUDB.dat file or collection directory → prefill (+process if /auto). */
+function tokenizeCmdTail(){ var cl=""; try{ cl=srumHta.commandLine+""; }catch(e){ return []; }
+  var m=cl.match(/\.hta"?/i); var tail=m?cl.substring(m.index+m[0].length):cl;
+  var toks=[],i=0,n=tail.length,cur="",inq=false;
+  while(i<n){ var c=tail.charAt(i);
+    if(inq){ if(c==='"'){inq=false;} else cur+=c; i++; continue; }
+    if(c==='"'){ inq=true; i++; continue; }
+    if(c===' '||c==='\t'){ if(cur!==""){toks.push(cur);cur="";} i++; continue; }
+    cur+=c; i++; }
+  if(cur!=="") toks.push(cur); return toks; }
+function parseCli(){ var toks=tokenizeCmdTail(), cli={input:"",outDir:"",auto:false};
+  for(var i=0;i<toks.length;i++){ var t=toks[i];
+    if(/^[\/\-]{1,2}auto$/i.test(t)){ cli.auto=true; continue; }
+    if(/^[\/\-]/.test(t)) continue;
+    if(!cli.input) cli.input=t; else if(!cli.outDir) cli.outDir=t; }
+  return cli; }
+function applyCli(cli){ if(!cli.input) return false;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(/\.csv$/i.test(cli.input) && fso.FileExists(cli.input)){ appendLog("CLI: loading CSV "+cli.input); PENDNOTE=""; window.setTimeout(function(){ loadCsvFile(cli.input); },60); return true; }
+  if(fso.FolderExists(cli.input)){ $("inMode").value="d"; $("inPath").value=cli.input; showEl("hiveRow",false); }
+  else if(fso.FileExists(cli.input)){ $("inMode").value="f"; $("inPath").value=cli.input; showEl("hiveRow",true); }
+  else { setStatus("CLI input not found: "+cli.input,"err"); appendLog("CLI input not found: "+cli.input); return false; }
+  if(cli.outDir) $("outDir").value=cli.outDir;
+  if(cli.auto){ appendLog("CLI: /auto — processing "+cli.input); window.setTimeout(function(){ processSrum(); },200); }
+  else setStatus("CLI: input prefilled — click 'Process → analyze' to run.","muted");
+  return true; }
 
 window.onload=init;
 </script>
