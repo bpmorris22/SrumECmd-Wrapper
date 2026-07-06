@@ -245,7 +245,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.3.0";
+var APP_VERSION = "1.4.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -589,6 +589,48 @@ function requireHost(){
   return h;
 }
 
+/* ---------- shared toolkit IOC list (family, 2026-07-06) ----------
+   IOC.txt next to the .hta (the toolkit folder — same file for every wrapper + the
+   Artifact-Finder): one term per line, # comments. Auto-merged into the IOC box at launch
+   (before any /auto run) so one paste covers the whole engagement; terms already present
+   are not duplicated, and the operator's box stays editable as usual. */
+function loadToolkitIoc(){
+  try{
+    var base=htaFolder(); if(!base) return;
+    var p=base+"\\IOC.txt";
+    if(!fileExists(p)) return;
+    var parts=String(readUtf8(p)).split(/\r?\n/), add=[], i;
+    for(i=0;i<parts.length;i++){ var s=trimStr(parts[i]); if(s && s.charAt(0)!=="#") add.push(s); }
+    if(!add.length) return;
+    var cur=$("iocBox").value, curL={}, cp=String(cur).split(/[\r\n,;]+/);
+    for(i=0;i<cp.length;i++){ var c=trimStr(cp[i]).toLowerCase(); if(c) curL[c]=1; }
+    var fresh2=[]; for(i=0;i<add.length;i++){ if(!curL[add[i].toLowerCase()]) fresh2.push(add[i]); }
+    if(!fresh2.length) return;
+    $("iocBox").value=(trimStr(cur)?(cur.replace(/\s+$/,"")+"\r\n"):"")+fresh2.join("\r\n");
+    applyIocs();
+    appendLog("Toolkit IOC list: merged "+fresh2.length+" term(s) from "+p);
+    setStatus("Loaded "+fresh2.length+" IOC term(s) from the toolkit IOC.txt","ok");
+  }catch(e){}
+}
+
+/* ---------- run provenance (family, 2026-07-06) ----------
+   Appended into <outDir>\runinfo.json after every successful run. The Artifact-Finder reads
+   these to bind outputs to their exact source artifact (and host) even without its manifest —
+   standalone wrapper runs show up as processed too. */
+function writeRunInfo(outdir, input, freshFiles){
+  try{
+    var p=String(outdir).replace(/[\\\/]+$/,"")+"\\runinfo.json";
+    var arr=[];
+    try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
+    var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
+    var iso=d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds());
+    var names=[]; for(var i=0;i<freshFiles.length && i<50;i++) names.push(freshFiles[i].name||String(freshFiles[i]));
+    arr.push({app:APP_NAME, appVersion:APP_VERSION, host:sanitHost($("hostName").value),
+              input:String(input||""), finishedUtc:iso, files:names});
+    writeUtf8(p, JSON.stringify(arr,null,2));
+  }catch(e){}
+}
+
 function processSrum(){
   var inp=trimStr($("inPath").value);
   var hive=trimStr($("hivePath").value);
@@ -645,6 +687,7 @@ function processSrumDone(log,outdir,before,wasRepair){
     populateProduced(all);
     return;
   }
+  writeRunInfo(outdir, $("inPath").value, fresh);
   PRODUCED=fresh;
   populateProduced(fresh);
   // auto-load the exfil table (NetworkUsages) when present; otherwise the biggest CSV
@@ -1562,6 +1605,7 @@ function init(){
   // default output follows the target hostname: _Processed\<host>\SrumECmd next to the .hta
   $("hostName").onkeyup=function(){ HOST_TOUCHED=true; syncOutDir(); };
   $("outDir").onkeyup=function(){ OUT_TOUCHED=true; };
+  loadToolkitIoc();   // shared toolkit IOC.txt — merged before any CLI /auto run
 
   var zoom=0.9;
   var zContent=$("content");
@@ -1780,6 +1824,8 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><code>&lt;input&gt;</code> — a <code>.csv</code> (auto-loads) or an <code>SRUDB.dat</code> file / collection directory (prefilled; processed with <code>/auto</code>).</li>
       <li><code>&lt;outDir&gt;</code> — CSV output directory (optional). &nbsp; <code>/auto</code> — process immediately.</li>
       <li><b>Target hostname</b> is required before processing — it names the output folder <code>_Processed\&lt;host&gt;\SrumECmd</code> next to this app (family convention shared with the Artifact-Finder). It is guessed from <code>Collection-&lt;host&gt;-…</code> paths, a passed <code>_Processed\&lt;host&gt;\</code> outDir, or this machine's name for live paths — overwrite the guess if it's wrong.</li>
+      <li><b>Shared IOC list</b>: an <code>IOC.txt</code> next to this app (one term per line, <code>#</code> comments) is auto-merged into the IOC box at launch — one list covers the whole toolkit. Terms you paste locally are kept.</li>
+      <li>After every successful run a <code>runinfo.json</code> provenance entry (app, host, input path, files) is appended in the output folder — the Artifact-Finder uses it to show processed state even for runs done outside the finder.</li>
     </ul>
     <h3>Notes</h3>
     <ul>
