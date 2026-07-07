@@ -75,7 +75,7 @@ Score ≥ 2 marks an aggregate suspicious. Scoring is computed per executable + 
 The wrapper can be launched with arguments so an artifact-finder (or a shortcut) opens it already pointed at an artifact:
 
 ```
-mshta.exe "SrumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto]
+mshta.exe "SrumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
 ```
 - `<input>` — a `.csv` (auto-loaded into the viewer) or an `SRUDB.dat` file / collection directory (prefilled; processed if `/auto`).
 - `<outDir>` — CSV output directory (optional; defaults to `_Processed\<host>\SrumECmd` next to the app).
@@ -83,6 +83,7 @@ mshta.exe "SrumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto]
 - **Shared IOC list** — an `IOC.txt` next to the app (one term per line, `#` comments) is auto-merged into the IOC box at launch; one list covers the whole toolkit and terms you paste locally are kept.
 - **Run provenance + triage summary** — every successful run appends a `runinfo.json` entry (app, host, input path, files) in the output folder, including a triage summary (entries, flagged count, max score, top hits, MB sent); the DFIR-Artifact-Finder shows these per host in its inventory, even for standalone runs.
 - `/auto` — process immediately.
+- `/from:yyyy-MM-dd` `/to:yyyy-MM-dd` — case window (UTC, inclusive): prefills the date filter and is recorded in `runinfo.json`; never affects scoring. The [DFIR-Artifact-Finder](https://github.com/bpmorris22/DFIR-Artifact-Finder) passes these on every launch.
 
 ## Credits
 
