@@ -7,3 +7,12 @@ SrumECmd.runtimeconfig.json
 *.log
 SRUDB.dat
 SOFTWARE
+
+# runtime files the toolkit conventions create next to the .hta — never commit (case data)
+_Processed/
+runinfo.json
+IOC.txt
+IOC.csv
+*.settings.json
+*.colw.txt
+defender-exclusion-added.txt
