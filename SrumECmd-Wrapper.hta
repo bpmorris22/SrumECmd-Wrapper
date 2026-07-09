@@ -23,6 +23,8 @@
   Output files: <yyyyMMddHHmmss>_SrumECmd_<Table>_Output.csv — 7 tables in v0.5.1
   (NetworkUsages, AppResourceUseInfo, AppTimelineProvider, NetworkConnections,
    vfuprov, PushNotifications, EnergyUsage). Discover by glob, never hardcode.
+  Since v1.7.0 the wrapper renames each produced CSV to <ts>_<host>_SrumECmd_<Table>_Output.csv
+  (target hostname stamped in — see hostTagCsvs). RUN_RE tolerates the optional _<host> token.
 
   Common column prefix on every table:
     Id,Timestamp,ExeInfo,ExeInfoDescription,ExeTimestamp,SidType,Sid,UserName,UserId,AppId
@@ -53,7 +55,7 @@
 <style>
   html{margin:0;height:100%;background:#0d1117}
   body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
-  #content{zoom:0.9}
+  #content{zoom:0.9;width:111.111%;box-sizing:border-box}   /* zoom<1 shrinks a 100%-wide block to <100% of the viewport (blank gutter on the right); widen by 1/zoom so it renders back to full width — applyZoom() keeps this in sync when the text size changes */
   a{color:#58a6ff}
   .mono{font-family:Consolas,"Courier New",monospace}
   .muted{color:#8b949e}
@@ -106,12 +108,12 @@
   .bfill{display:block;height:100%;background:#1f6feb}
   .bfill.warn{background:#f85149}
   .bval{display:inline-block;width:20%;text-align:right;font-size:11px;color:#8b949e;vertical-align:middle}
-  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:220px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:nowrap}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:220px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:nowrap;width:100%;box-sizing:border-box}
   .dl div{overflow:hidden;text-overflow:ellipsis}
   .hl-user{color:#d29922}
   .hl-ioc{color:#ff6b6b;font-weight:700}
-  .scroll{max-height:56vh;overflow:auto;border:1px solid #30363d;border-radius:8px}
-  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px}
+  .scroll{max-height:56vh;overflow:auto;border:1px solid #30363d;border-radius:8px;width:100%;box-sizing:border-box}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
   .hide{display:none}
   .lnk{cursor:pointer;color:#58a6ff}
   .lnk:hover{text-decoration:underline}
@@ -133,6 +135,7 @@
   <span class="pill" id="verpill">version: checking&hellip;</span>
   <span class="pill" id="srcpill">no data loaded</span>
   <span style="float:right">
+    <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest HTML field guide from GitHub and open it in your browser">Instructions</button>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
     <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
     <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
@@ -245,7 +248,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.6.1";
+var APP_VERSION = "1.7.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -686,7 +689,16 @@ function processSrum(){
   }
   if(inmode==="f" && hive && !fso.FileExists(hive)){ setStatus("SOFTWARE hive not found: "+hive,"err"); return; }
   if(!outdir){ setStatus("Set an output directory","err"); return; }
-  if(!EXE||!fileExists(EXE)){ setStatus("SrumECmd.exe not found — download it first","err"); return; }
+  if(!EXE||!fileExists(EXE)){
+    // Process was pressed but the parser has not been downloaded yet — offer to fetch it, then
+    // continue straight into processing. downloadLatest() shows its own download confirmation and
+    // re-locates the exe (evaluateTooling) so EXE is set when it returns on success.
+    setStatus("SrumECmd.exe not found — downloading it before processing…","muted");
+    appendLog("Process requested but SrumECmd.exe is not present — prompting to download it first.");
+    downloadLatest();
+    if(!EXE||!fileExists(EXE)){ setStatus("SrumECmd.exe is still not available — download it (Update / download SrumECmd), then Process again.","err"); return; }
+    appendLog("SrumECmd downloaded on demand — continuing to process "+inp);
+  }
   if(BUSY){ setStatus("A SrumECmd run is already in progress — wait for it to finish.","err"); return; }
   PENDNOTE="";
   var flag=(inmode==="d")?"-d":"-f";
@@ -724,6 +736,7 @@ function processSrumDone(log,outdir,before,wasRepair){
     populateProduced(all);
     return;
   }
+  fresh=hostTagCsvs(fresh, $("hostName").value);   // stamp the target hostname into each produced CSV filename
   writeRunInfo(outdir, $("inPath").value, fresh);
   PRODUCED=fresh;
   populateProduced(fresh);
@@ -804,6 +817,31 @@ function runRepair(dat, failLog, outdir){
   setStatus("Repair starting…","muted");
   window.setTimeout(function(){ pollDone(ctx); }, 1000);
 }
+/* ---------- host-tag produced CSVs (1.7.0) ----------
+   SrumECmd names its tables <ts>_SrumECmd_<Table>_Output.csv with no host in them. Rename each
+   freshly produced file to <ts>_<host>_SrumECmd_<Table>_Output.csv so the target host is visible
+   on disk and in the Produced-CSVs picker. The host token sits AFTER the numeric timestamp so files
+   still sort newest-first and RUN_RE (which keys sibling grouping on the timestamp) still matches.
+   Files already tagged (or not in SrumECmd's native form) are left untouched; a rename failure is
+   non-fatal — the original file is kept and returned as-is. */
+function hostTagCsvs(fresh, host){
+  var tag=sanitHost(host||""); if(!tag) return fresh;
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), out=[];
+  for(var i=0;i<fresh.length;i++){
+    var f=fresh[i];
+    var m=String(f.name).match(/^(\d{14})_SrumECmd_(.+_Output\.csv)$/i);   // only the native <ts>_SrumECmd_<table>_Output.csv form
+    if(!m){ out.push(f); continue; }
+    var newName=m[1]+"_"+tag+"_SrumECmd_"+m[2];
+    if(newName===f.name){ out.push(f); continue; }
+    var dir=f.path.substring(0,f.path.lastIndexOf("\\")+1), newPath=dir+newName;
+    try{
+      if(fso.FileExists(newPath)) fso.DeleteFile(newPath);
+      fso.MoveFile(f.path, newPath);
+      out.push({name:newName, path:newPath, size:f.size});
+    }catch(e){ appendLog("Could not host-tag "+f.name+": "+e.message); out.push(f); }
+  }
+  return out;
+}
 function csvNameSet(dir){ var o={}, l=listCsvFiles(dir); for(var i=0;i<l.length;i++) o[l[i].name]=true; return o; }
 function listCsvFiles(dir){
   var fso=new ActiveXObject("Scripting.FileSystemObject"), out=[];
@@ -848,7 +886,9 @@ function dayNum(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{1,2})-(\
   function p(x){ x=String(x); return x.length<2?("0"+x):x; }
   return Number(m[1]+p(m[2])+p(m[3])); }
 function fileSize(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").GetFile(p).Size; }catch(e){ return 0; } }
-var RUN_RE = /^(\d{14})_SrumECmd_(.+)_Output\.csv$/i;
+// group1 = the 14-digit run timestamp (keys sibling grouping); an optional _<host> token (added by
+// hostTagCsvs in 1.7.0) may sit between the timestamp and _SrumECmd_ — both native and host-tagged names match.
+var RUN_RE = /^(\d{14})(?:_.+?)?_SrumECmd_(.+)_Output\.csv$/i;
 
 /* ---------- tab model: one tab per table CSV, parsed lazily on first open ---------- */
 /* Loading any CSV of a SrumECmd run discovers every same-run sibling table in the folder. */
@@ -1456,11 +1496,13 @@ function gripReset(e){
 function cq(v){ v=(v==null)?"":String(v); return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
 function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
   return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+/* filename prefix carrying the target host, e.g. "WORKSTATION-01_" — empty when no host is set (1.7.0) */
+function hostTag(){ var h=sanitHost($("hostName").value||""); return h?(h+"_"):""; }
 function exportView(){
   var t=window.__viewTab;
   if(!t){ setStatus("Nothing to export","err"); return; }
   var lines=[], i, dir=LASTOUTDIR||$("outDir").value;
-  var path=dir+"\\"+t.name.replace(/[^\w.-]/g,"_")+"_filtered_"+nowStamp()+".csv";
+  var path=dir+"\\"+hostTag()+t.name.replace(/[^\w.-]/g,"_")+"_filtered_"+nowStamp()+".csv";
   if(t.kind==="agg"){
     var view=window.__viewAgg||[];
     if(!view.length){ setStatus("Nothing to export","err"); return; }
@@ -1611,7 +1653,7 @@ function exportHourly(){
   }
   var dir=LASTOUTDIR||$("outDir").value;
   var sidShort=String(o.sid||"nosid").replace(/^S-1-5-21-.*-(\d+)$/,"$1").replace(/[^\w-]/g,"_");
-  var path=dir+"\\"+exeBase(baseName(o.exeL)).replace(/[^\w.-]/g,"_")+"_"+sidShort+"_hourly_"+nowStamp()+".csv";
+  var path=dir+"\\"+hostTag()+exeBase(baseName(o.exeL)).replace(/[^\w.-]/g,"_")+"_"+sidShort+"_hourly_"+nowStamp()+".csv";
   try{ writeUtf8(path, lines.join("\r\n"));
     setStatus("Exported "+nf(order.length)+" hourly rows for "+dispNameOf(o.exe)+" → "+path,"ok"); appendLog("Exported hourly: "+path); }
   catch(er){ setStatus("Export failed: "+er.message,"err"); }
@@ -1654,7 +1696,7 @@ function init(){
 
   var zoom=0.9;
   var zContent=$("content");
-  function applyZoom(){ zContent.style.zoom=zoom; var p=Math.round(zoom*100)+"%";
+  function applyZoom(){ zContent.style.zoom=zoom; zContent.style.width=(100/zoom)+"%"; var p=Math.round(zoom*100)+"%";
     $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
   applyZoom();
   $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
@@ -1814,6 +1856,45 @@ function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,fal
 function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION; }catch(e){} showEl("helpModal",true); }
 function closeHelp(){ showEl("helpModal",false); }
 
+/* ---------- Instructions: fetch the latest shared toolkit field guide & open it (1.7.0) ----------
+   The self-contained HTML manual (covers the whole wrapper family) is too large to embed, so we
+   download it to %TEMP% (overwritten each click = always the latest) and open THAT via its browser
+   association. Falls back to a previously downloaded copy if the fetch fails (offline). */
+var MANUAL_URL="https://raw.githubusercontent.com/bpmorris22/DFIR-Windows-Artifact-Finder/main/docs/DFIR-Toolkit-Manual.html";
+var MANUAL_FILE="DFIR-Toolkit-Manual.html";
+function openManualFile(path){
+  try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+path+'"',1,false); return true; }   // explorer = ShellExecute (default-browser association)
+  catch(e){ setStatus("Downloaded the field guide, but could not open it: "+e.message,"err"); return false; }
+}
+function openInstructions(){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE;   // %TEMP% — overwritten each click with the latest
+  setStatus("Downloading the field guide from GitHub…","muted");
+  var ps1=fso.GetSpecialFolder(2)+"\\srum_man_"+uid()+".ps1";
+  var dq=String(dest).replace(/'/g,"''");
+  var L=[];
+  L.push("$ErrorActionPreference='Stop'");
+  L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
+  L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='SrumECmd-Wrapper' }");
+  L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }");
+  L.push("Write-Output 'MAN_OK'");
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }
+  catch(ew){ setStatus("Could not stage the field-guide download: "+ew.message,"err"); return; }
+  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']);
+  try{ fso.DeleteFile(ps1); }catch(e0){}
+  if((r.log+"").indexOf("MAN_OK")>=0 && fileExists(dest)){
+    if(openManualFile(dest)) setStatus("Field guide downloaded and opened in your browser.","ok");
+    appendLog("Field guide: downloaded latest -> "+dest);
+  } else {
+    appendLog("--- field-guide download ---\n"+r.log);
+    if(fileExists(dest)){
+      if(openManualFile(dest)) setStatus("Download failed (offline?) — opened the previously downloaded copy.","muted");
+    } else {
+      setStatus("Field-guide download failed (offline, or the file moved). See log; or open it from the GitHub repo.","err");
+    }
+  }
+}
+
 /* ---------- self-update: quiet check of this app's GitHub Releases; one-click download of a newer .hta ---------- */
 var SELF_REPO="bpmorris22/SrumECmd-Wrapper", SELF_HTA="SrumECmd-Wrapper.hta", SELF_LATEST="", SELF_ASSET_URL="";
 function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length);
@@ -1888,6 +1969,9 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     </ul>
     <h3>Notes</h3>
     <ul>
+      <li><b>Instructions</b> (top-right) downloads the latest DFIR toolkit field guide from GitHub and opens it in your browser.</li>
+      <li>Pressing <b>Process</b> when <code>SrumECmd.exe</code> isn't present offers to download it first, then continues straight into the run.</li>
+      <li>Produced CSVs carry the <b>target hostname</b> in the filename (<code>&lt;ts&gt;_&lt;host&gt;_SrumECmd_&lt;Table&gt;_Output.csv</code>); filtered/hourly exports are prefixed with it too.</li>
       <li>Network-summary and data-transfer views, IOC/keyword list, and a detail pane are built in. All timestamps UTC.</li>
       <li>Drag a column header's right edge to resize it (widths persist per view); double-click the edge to reset all widths.</li>
       <li>SRUM is parsed through the host's local ESE engine — a <code>SRUDB.dat</code> newer than the analysis host's Windows build must be parsed on an equal-or-newer Windows.</li>
