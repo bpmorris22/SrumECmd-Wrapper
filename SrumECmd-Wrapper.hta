@@ -151,7 +151,7 @@
     <div class="muted" id="exeline" style="font-size:11px;margin-bottom:6px"></div>
     <label class="fld">SRUM to process
       &mdash; <select id="inMode" title="Directory = recurse a folder (SrumECmd -d) and locate SRUDB.dat AND the SOFTWARE hive automatically (KAPE/Velociraptor collection trees work as-is). Single file = process one SRUDB.dat (SrumECmd -f) with an optional SOFTWARE hive.">
-        <option value="d">directory (recursive &mdash; finds SRUDB.dat + SOFTWARE)</option><option value="f">single SRUDB.dat file</option></select>
+        <option value="d">directory (recursive &mdash; finds SRUDB.dat + SOFTWARE)</option><option value="f">single SRUDB.dat file (auto-finds sibling SOFTWARE)</option></select>
       &nbsp;<label style="font-size:12px" title="--debug: verbose SrumECmd output in the run log. Useful when a parse fails.">
         <input type="checkbox" id="optDebug"> debug output</label>
     </label>
@@ -159,7 +159,7 @@
     <input type="file" id="inPick" style="display:none">
     <button class="btn" id="browseBtn">Browse&hellip;</button>
     <div id="hiveRow" class="hide">
-      <label class="fld">SOFTWARE hive (-r) &mdash; optional but recommended: resolves network profile names and related lookups. Leave empty to skip.</label>
+      <label class="fld">SOFTWARE hive (-r) &mdash; optional but recommended: resolves network profile names and related lookups. Leave empty and it is auto-detected from a standard collection layout (…\System32\config\SOFTWARE beside the SRUDB.dat); clear it to skip.</label>
       <input class="txt wide" id="hivePath" value="" placeholder="path to SOFTWARE hive (optional)">
       <input type="file" id="hivePick" style="display:none">
       <button class="btn" id="hiveBtn">Browse&hellip;</button>
@@ -248,7 +248,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.7.0";
+var APP_VERSION = "1.8.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -688,6 +688,18 @@ function processSrum(){
     return;
   }
   if(inmode==="f" && hive && !fso.FileExists(hive)){ setStatus("SOFTWARE hive not found: "+hive,"err"); return; }
+  // auto-derive the SOFTWARE hive from the standard collection layout when the field is left blank
+  // (…\System32\sru\SRUDB.dat  ->  …\System32\config\SOFTWARE) — the same sibling-guess runRepair() uses.
+  // Directory mode already finds the hive itself; this brings single-file mode to parity. Non-fatal: if the
+  // sibling isn't there we simply run without profile-name resolution, exactly as before.
+  if(inmode==="f" && !hive){
+    var hguess=parentDir(parentDir(inp))+"\\config\\SOFTWARE";
+    if(fso.FileExists(hguess)){
+      hive=hguess;
+      try{ $("hivePath").value=hive; }catch(e){}
+      appendLog("Auto-located SOFTWARE hive beside SRUDB.dat: "+hive+"\n(resolves network profile names; clear the field before Process to skip it.)");
+    }
+  }
   if(!outdir){ setStatus("Set an output directory","err"); return; }
   if(!EXE||!fileExists(EXE)){
     // Process was pressed but the parser has not been downloaded yet — offer to fetch it, then
@@ -1213,18 +1225,24 @@ function renderGrid(){
   renderOverview();
 }
 /* ---------- overview dashboard (spec §6.1) — recomputed under the active filters ---------- */
-function bar(label,frac,val,q,sus){
+function bar(label,frac,val,q,sus,full){
   var lc=q?(' lnk" data-q="'+esc(q)):'';
-  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(label)+'"'+(sus?' style="color:#ff6b6b"':'')+'>'+esc(label)+'</span>'
+  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(full||label)+'"'+(sus?' style="color:#ff6b6b"':'')+'>'+esc(label)+'</span>'
     +'<span class="btrack"><span class="bfill'+(sus?' warn':'')+'" style="width:'+(frac*100).toFixed(1)+'%"></span></span>'
     +'<span class="bval">'+esc(val)+'</span></div>';
 }
-function listRow(label,val,q,cls){
+function listRow(label,val,q,cls,full){
   var lc=q?(' lnk" data-q="'+esc(q)):'';
-  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(label)+'" style="width:52%">'+esc(label)+'</span>'
+  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(full||label)+'" style="width:52%">'+esc(label)+'</span>'
     +'<span class="bval" style="width:44%;'+(cls||"")+'">'+esc(val)+'</span></div>';
 }
 function qOf(o){ var d=dispNameOf(o.exe); return (d==="(blank ExeInfo)")?"":d; }
+// Overview bars/rows show a short basename for readability; the tooltip carries the full ExeInfo so a
+// masquerading binary in an anomalous path (e.g. …\systemprofile\appdata\roaming\…\node.exe) is visible
+// on hover without opening the Summary tab. Blank ExeInfo gets an explanation, not a bare empty string,
+// so it never reads as a wrapper bug.
+function fullNameOf(o){ return o.exe ? o.exe :
+  "(no ExeInfo recorded — SRUM could not resolve this AppId to an executable. The byte counts are real; these rows are usually OS/kernel-attributed or tombstoned traffic, not a parser error.)"; }
 function fmtShortTs(s){ var m=String(s).match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/); return m?(m[1]+" "+m[2]):String(s||"—"); }
 function renderOverview(){
   var ns=findTab("Network Summary");
@@ -1266,19 +1284,19 @@ function renderOverview(){
   var bySent=view.slice(0).sort(function(a,b){ return b.sent-a.sent; });
   var h="", max=bySent.length?bySent[0].sent:0;
   for(i=0;i<bySent.length&&i<12;i++){ o=bySent[i];
-    h+=bar(dispNameOf(o.exe), max?o.sent/max:0, fmtSize(o.sent), qOf(o), o.sus); }
+    h+=bar(dispNameOf(o.exe), max?o.sent/max:0, fmtSize(o.sent), qOf(o), o.sus, fullNameOf(o)); }
   $("topSent").innerHTML=h||'<span class="muted">none</span>';
   // col 2: suspicious, score-ranked
   var byScore=[]; for(i=0;i<view.length;i++){ if(view[i].sus) byScore.push(view[i]); }
   byScore.sort(function(a,b){ return (b.score-a.score)||(b.sent-a.sent); });
   h=""; for(i=0;i<byScore.length&&i<12;i++){ o=byScore[i];
-    h+=listRow(dispNameOf(o.exe)+" ["+o.tags.join(",")+"]", "score "+o.score+" · "+fmtSize(o.sent), qOf(o), "color:#ff6b6b"); }
+    h+=listRow(dispNameOf(o.exe)+" ["+o.tags.join(",")+"]", "score "+o.score+" · "+fmtSize(o.sent), qOf(o), "color:#ff6b6b", fullNameOf(o)); }
   $("topSus").innerHTML=h||'<span class="ok">No suspicious aggregates</span>';
   // col 3: SYSTEM network hotlist (where boot-service implants show up)
   var sysL=[]; for(i=0;i<view.length;i++){ o=view[i]; if(o.sid==="S-1-5-18"&&(o.sent+o.recv)>0) sysL.push(o); }
   sysL.sort(function(a,b){ return b.sent-a.sent; });
   h=""; for(i=0;i<sysL.length&&i<12;i++){ o=sysL[i];
-    h+=listRow(dispNameOf(o.exe), fmtSize(o.sent)+" sent", qOf(o), o.sus?"color:#ff6b6b":""); }
+    h+=listRow(dispNameOf(o.exe), fmtSize(o.sent)+" sent", qOf(o), o.sus?"color:#ff6b6b":"", fullNameOf(o)); }
   $("topSys").innerHTML=h||'<span class="muted">none</span>';
   showEl("ovCards", true);
 }

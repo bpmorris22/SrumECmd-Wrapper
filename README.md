@@ -17,7 +17,7 @@ SRUM is the only native Windows artifact that **quantifies per-application netwo
 
 ## Features
 
-- **Runs SrumECmd for you** — directory mode (`-d`, recurses a collection tree and locates both `SRUDB.dat` and the `SOFTWARE` hive automatically) or single-file mode (`-f` with an optional `-r SOFTWARE` hive). Runs asynchronously in a visible console so the UI never freezes. URL-encoded collection paths (`C%3A…` from Velociraptor) are handled.
+- **Runs SrumECmd for you** — directory mode (`-d`, recurses a collection tree and locates both `SRUDB.dat` and the `SOFTWARE` hive automatically) or single-file mode (`-f`). In single-file mode the `SOFTWARE` hive is now auto-detected from the standard collection layout (`…\System32\config\SOFTWARE` beside the `…\System32\sru\SRUDB.dat` you selected), so network-profile names resolve without a second Browse — leave the field blank to auto-detect, or clear it to skip. Runs asynchronously in a visible console so the UI never freezes. URL-encoded collection paths (`C%3A…` from Velociraptor) are handled.
 - **Self-managing tooling** — finds `SrumECmd.exe` next to the `.hta` (or in `C:\ZimmermanTools`), checks the live latest version against ericzimmerman.github.io, and can download/update a self-contained copy with one click. Sets `DOTNET_ROLL_FORWARD=Major` automatically so .NET 9-target builds run on newer runtimes.
 - **Dirty-database handling** — a `SRUDB.dat` from a raw collection is frequently ESE-dirty or carries transaction logs from a newer Windows build. The wrapper recognizes the failure, offers a one-click **repair on a copy** (copies the `.dat` alone, runs `esentutl /p /o`, re-processes — original evidence untouched), and honestly reports the one case that cannot be repaired locally (a database whose *format* is newer than the analysis host's ESE engine — parse it on an equal-or-newer Windows build, or collect via Velociraptor's SRUM artifact instead).
 - **One tab per SRUM table** — NetworkUsages, AppResourceUseInfo, AppTimelineProvider, NetworkConnections, vfuprov, PushNotifications, EnergyUsage (and any future table SrumECmd adds). Tables parse lazily on first open, in chunks, so a 130k-row table never white-screens the app.
@@ -28,7 +28,7 @@ SRUM is the only native Windows artifact that **quantifies per-application netwo
 - **IOC / keyword list** — paste or load terms; matched case-insensitively against executable paths, SIDs, users, interfaces and network profile names, rescoring live (+3 per hit).
 - **Filters** — category buttons with live counts (All / Suspicious / SYSTEM / User-path / LOLBIN / High-volume / IOC hits), free-text search across all columns, and a UTC date range that also re-aggregates the summary views to the window.
 - **Resizable columns** — drag a column header's right edge to resize it; widths persist per view (in a small settings sidecar next to the `.hta`); double-click the edge to reset all widths.
-- **Overview dashboard** — dataset stats plus Top talkers, score-ranked Suspicious, and a SYSTEM-network hotlist; all recomputed under active filters, all clickable.
+- **Overview dashboard** — dataset stats plus Top talkers, score-ranked Suspicious, and a SYSTEM-network hotlist; all recomputed under active filters, all clickable. Each bar shows a short executable name but reveals the **full `ExeInfo` path on hover** — so a binary masquerading from an anomalous location (say `node.exe` running out of `…\systemprofile\appdata\roaming\…`) is visible without leaving the dashboard; rows with no resolvable executable are labelled and explained on hover rather than reading as a blank.
 - **Detail pane** — click any row for the full path, tags with reasoning, presence across every table (network sent/received, disk read/written, row counts elsewhere), and an **hourly activity mini-timeline** that makes exfil windows and beaconing cadence visible at a glance.
 - **Reporting** — export any filtered view (table or summary) to CSV, export a **single process's per-hour activity** (network and disk series merged) to CSV, or copy formatted case-note lines to the clipboard.
 
@@ -38,7 +38,7 @@ SRUM is the only native Windows artifact that **quantifies per-application netwo
 2. Double-click it. If `SrumECmd.exe` isn't found next to it, the app offers to download the latest official build.
 3. Point the input at a SRUM source and click **Process → analyze**:
    - **directory mode** — a collected `…\Windows\System32` folder (so `System32\sru\SRUDB.dat` and `System32\config\SOFTWARE` are both inside the tree), or any KAPE / Velociraptor collection root;
-   - **single-file mode** — a specific `SRUDB.dat`, with an optional `SOFTWARE` hive for network-profile resolution.
+   - **single-file mode** — a specific `SRUDB.dat`; the sibling `SOFTWARE` hive is auto-detected for network-profile resolution (leave the hive field blank), or point it at a hive elsewhere.
 4. Or skip processing and **Load existing CSV…** to analyze SrumECmd CSVs you already have — loading any one CSV of a run opens every sibling table.
 
 > The live `C:\Windows\System32\sru\SRUDB.dat` on a running machine is locked by the SRUM service and cannot be read in place — collect it first (Velociraptor / KAPE / raw copy) and process the collection.
