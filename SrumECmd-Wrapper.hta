@@ -251,7 +251,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.9.0";
+var APP_VERSION = "1.9.1";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -413,11 +413,21 @@ function runBatAsync(lines, show){
   f.WriteLine('echo done> "'+donep+'"');   // marker written after everything above completes
   f.Close();
   sh.Run('cmd /c ""'+bat+'""', show?1:0, false);   // false = do NOT block the script
-  return { bat:bat, log:logp, done:donep, elapsed:0 };
+  return { bat:bat, log:logp, done:donep, stamp:stamp, elapsed:0, graceSecs:10 };
+}
+function procAliveByTag(tag){
+  try{
+    var w=GetObject("winmgmts:\\\\.\\root\\cimv2");
+    var items=w.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE CommandLine LIKE '%srumecmd_"+tag+"%'");
+    return items.Count>0;
+  }catch(e){ return true; }   // WMI unavailable → assume alive, so we never end a run early on error
 }
 function pollDone(ctx){
   var fso=new ActiveXObject("Scripting.FileSystemObject");
-  if(fso.FileExists(ctx.done)){
+  var grace=ctx.graceSecs||10;
+  var finished=fso.FileExists(ctx.done);
+  if(!finished && ctx.elapsed>=grace && ctx.stamp && !procAliveByTag(ctx.stamp)) finished=true;   // worker gone but .done sentinel lost -> still complete (recovers finished runs)
+  if(finished){
     var log=""; try{ if(fso.FileExists(ctx.log)) log=readUtf8(ctx.log); }catch(e){ log="(could not read log: "+e.message+")"; }
     try{ fso.DeleteFile(ctx.bat); }catch(e1){}
     try{ fso.DeleteFile(ctx.done); }catch(e2){}
