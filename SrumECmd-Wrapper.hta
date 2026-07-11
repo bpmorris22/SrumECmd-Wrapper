@@ -65,6 +65,8 @@
   header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
   header h1 small{color:#8b949e;font-weight:400}
   .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .pill.ok{color:#7ee787;border-color:#2ea043}
+  .pill.bad{color:#ff8b3d;border-color:#bd561d}
   .wrap{padding:12px 14px}
   .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
   .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
@@ -131,8 +133,9 @@
 </head>
 <body>
 <header>
-  <h1>SrumECmd Wrapper <small>&mdash; DFIR SRUM triage <span id="appver"></span></small></h1>
-  <span class="pill" id="verpill">version: checking&hellip;</span>
+  <h1>SrumECmd Wrapper <small>&mdash; DFIR SRUM triage </small></h1>
+  <span class="pill" id="apppill" title="This app's version">app: checking&hellip;</span>
+  <span class="pill" id="verpill" title="SrumECmd.exe version">SrumECmd: checking&hellip;</span>
   <span class="pill" id="srcpill">no data loaded</span>
   <span style="float:right">
     <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest HTML field guide from GitHub and open it in your browser">Instructions</button>
@@ -248,7 +251,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.8.0";
+var APP_VERSION = "1.9.0";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -467,6 +470,8 @@ function checkDeps(){
 function verTuple(v){ var p=String(v).split("."); var a=[]; for(var i=0;i<p.length;i++) a.push(parseInt(p[i],10)||0); return a; }
 function verCmp(a,b){ a=verTuple(a); b=verTuple(b); var n=Math.max(a.length,b.length);
   for(var i=0;i<n;i++){ var x=a[i]||0,y=b[i]||0; if(x!==y) return x<y?-1:1; } return 0; }
+function schemesComparable(a,b){ var am=parseInt(String(a).split(".")[0],10)||0, bm=parseInt(String(b).split(".")[0],10)||0;
+  return (am>=2000)===(bm>=2000); }   /* CalVer(site) vs SemVer(exe banner) are not comparable — avoids a perpetual bogus update nag */
 function fetchLatest(){
   LATEST_VER=KNOWN_LATEST_SRUM; WEB_OK=false;
   try{
@@ -477,15 +482,19 @@ function fetchLatest(){
   }catch(e){ WEB_OK=false; }
   return LATEST_VER;
 }
+/* exe pill: green=present/current, orange=comparable newer exists, grey=not found (downloaded on demand) */
 function updateVerPill(){
-  var s=LOCAL_VER?("SrumECmd v"+esc(LOCAL_VER)):"SrumECmd: not found";
-  if(!WEB_OK){ s+=" &middot; <span style='color:#8b949e'>no internet / no web source</span>"; }
-  else if(LATEST_VER){
-    if(LOCAL_VER && verCmp(LOCAL_VER,LATEST_VER)<0) s+=" &middot; <span style='color:#d29922'>update v"+esc(LATEST_VER)+" available</span>";
-    else if(LOCAL_VER) s+=" &middot; <span style='color:#3fb950'>latest</span>";
-    else s+=" &middot; latest v"+esc(LATEST_VER);
-  }
-  $("verpill").innerHTML=s;
+  var p=$("verpill"); if(!p) return;
+  if(!LOCAL_VER){ p.className="pill"; p.innerHTML="SrumECmd: not found";
+    p.title="SrumECmd.exe is not next to this app or in C:\\ZimmermanTools — it is downloaded on demand when you Process."; return; }
+  var outdated = WEB_OK && LATEST_VER && schemesComparable(LOCAL_VER,LATEST_VER) && verCmp(LOCAL_VER,LATEST_VER)<0;
+  if(outdated){ p.className="pill bad"; p.innerHTML="SrumECmd v"+esc(LOCAL_VER)+" &middot; update v"+esc(LATEST_VER);
+    p.title="A newer SrumECmd (v"+LATEST_VER+") is on the Zimmerman Tools site — use the update button."; return; }
+  p.className="pill ok"; p.innerHTML="SrumECmd v"+esc(LOCAL_VER);
+  p.title = !WEB_OK ? ("Present and working. Couldn't reach the Zimmerman Tools site to check for a newer version.")
+    : (LATEST_VER && !schemesComparable(LOCAL_VER,LATEST_VER)
+        ? ("Present. Site lists v"+LATEST_VER+" (CalVer) vs the exe banner v"+LOCAL_VER+" (SemVer) — different schemes, not comparable, so no bogus update is forced.")
+        : ("Up to date."));
 }
 function evaluateTooling(promptIfNeeded){
   var dir=htaFolder();
@@ -499,7 +508,7 @@ function evaluateTooling(promptIfNeeded){
   if(!promptIfNeeded) return;
   if(localComplete){
     // exe already next to the .hta → only prompt when the web says a newer version exists
-    if(WEB_OK && LOCAL_VER && verCmp(LOCAL_VER,LATEST_VER)<0){
+    if(WEB_OK && LOCAL_VER && schemesComparable(LOCAL_VER,LATEST_VER) && verCmp(LOCAL_VER,LATEST_VER)<0){
       if(confirm("A newer SrumECmd is available.\n\nNext to this app: v"+LOCAL_VER+"\nLatest online:   v"+LATEST_VER+"\n\nDownload the update next to the app now?")) downloadLatest();
     }
   } else {
@@ -626,7 +635,7 @@ function writeRunInfo(outdir, input, freshFiles){
     var arr=[];
     try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
     var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
-    var iso=d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds());
+    var iso=d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds())+"Z";  // real UTC (was local, mislabeled) — QA item 7
     var names=[]; for(var i=0;i<freshFiles.length && i<50;i++) names.push(freshFiles[i].name||String(freshFiles[i]));
     var ent={app:APP_NAME, appVersion:APP_VERSION, host:sanitHost($("hostName").value),
               input:String(input||""), finishedUtc:iso, files:names};
@@ -1702,7 +1711,7 @@ function applyIocs(){
 /* ---------- wiring ---------- */
 function init(){
   try{ window.resizeTo(1320,900); }catch(e){}
-  $("appver").innerHTML="&middot; v"+APP_VERSION;
+  $("apppill").innerHTML="app v"+APP_VERSION; $("apppill").title="This app v"+APP_VERSION+" — checking GitHub for a newer release…";
   try{ document.title="SrumECmd Wrapper v"+APP_VERSION; }catch(e){}
   loadSettings();
   $("tblScroll").onscroll=applyFreeze;
@@ -1927,11 +1936,12 @@ function checkSelfUpdate(){
     x.onreadystatechange=function(){ if(x.readyState!==4) return;
       try{ if(x.status!==200) return; var t=x.responseText+"";
         var m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
-        var latest=m[1]; if(!selfVerNewer(latest,APP_VERSION)) return;
+        var latest=m[1]; var ap=$("apppill"); if(!selfVerNewer(latest,APP_VERSION)){ if(ap){ ap.className="pill ok"; ap.title="Up to date — v"+APP_VERSION+" is the latest release."; } return; }
         var url="", re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm;
         while((mm=re.exec(t))){ if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0){ url=mm[1]; break; } if(!url) url=mm[1]; }
         if(!url) url="https://github.com/"+SELF_REPO+"/releases/download/v"+latest+"/"+SELF_HTA;
         SELF_LATEST=latest; SELF_ASSET_URL=url;
+        if(ap){ ap.className="pill bad"; ap.innerHTML="app v"+APP_VERSION+" &middot; update v"+latest; ap.title="A newer version (v"+latest+") is on GitHub — click the Update button."; }
         var b=$("selfUpd"); if(b){ b.innerHTML="Update to v"+latest; b.className="btn primary";
           b.title="A newer "+SELF_HTA+" (v"+latest+") is on GitHub — click to download & replace this file"; }
       }catch(e){} };
