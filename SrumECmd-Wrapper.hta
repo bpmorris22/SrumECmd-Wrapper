@@ -218,6 +218,8 @@
       </div>
       <div class="row" style="margin-bottom:8px">
         <input class="txt" id="q" placeholder="search all columns&hellip;" style="width:280px">
+        <span id="userWrap" class="hide"><span class="sep"></span><label class="muted" style="font-size:12px">user:</label>
+          <select id="userSel" title="Filter every tab to one user account — UserName as SrumECmd resolved it, the raw SID when unresolved, SYSTEM for S-1-5-18. Applies to the summary and raw tabs alike; a tab without UserName/Sid columns ignores it (the dropdown greys out there)."><option value="">All users</option></select></span>
         <span class="sep"></span>
         <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:140px" title="Filter by the Timestamp column (UTC) — applies to every tab; summary tabs re-aggregate to the window">
         <span class="muted">&rarr;</span>
@@ -242,7 +244,7 @@
         <h3>Aggregate detail <span class="lnk" id="detClose" style="float:right;margin-left:12px">close &times;</span><span class="lnk" id="detHourly" style="float:right;margin-left:12px">export hourly &rarr; CSV</span><span class="lnk" id="detCopy" style="float:right">copy record</span></h3>
         <div id="detBody"></div>
       </div>
-      <div class="muted" id="foot" style="font-size:11px;margin-top:6px">Click any row for aggregate detail (hourly activity, cross-table presence); overview entries are clickable too. One tab per SRUM table plus per-executable summary tabs; tables parse on first open (search, categories and date filter are global across tabs; summary tabs re-aggregate to the date window). Suspicious rows are shaded (heuristic score &ge; 2: user-path, LOLBIN, masquerade, SYSTEM-from-user-path network, volume/upload anomalies, IOC hits). All timestamps UTC as SrumECmd emits them; the Timestamp column is an <b>hourly flush bucket</b> &mdash; events may predate it by up to ~1&nbsp;hour and the final unflushed hour is lost on hard power-off. Max 6000 rows shown; export writes the full filtered set.</div>
+      <div class="muted" id="foot" style="font-size:11px;margin-top:6px">Click any row for aggregate detail (hourly activity, cross-table presence); overview entries are clickable too. One tab per SRUM table plus per-executable summary tabs; tables parse on first open (search, categories, the user dropdown and date filter are global across tabs; summary tabs re-aggregate to the date window). Click a User cell to filter every tab to that account (unresolved accounts appear as raw SIDs; the dropdown greys out on tables without UserName/Sid columns). Suspicious rows are shaded (heuristic score &ge; 2: user-path, LOLBIN, masquerade, SYSTEM-from-user-path network, volume/upload anomalies, IOC hits). All timestamps UTC as SrumECmd emits them; the Timestamp column is an <b>hourly flush bucket</b> &mdash; events may predate it by up to ~1&nbsp;hour and the final unflushed hour is lost on hard power-off. Max 6000 rows shown; export writes the full filtered set.</div>
     </div>
   </div>
 
@@ -251,7 +253,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.9.1";
+var APP_VERSION = "1.10.1";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -269,6 +271,7 @@ var TABS = [];                       // per tab: kind "csv" {name,path,size,stat
 var CURTAB = -1;                     // index into TABS of the visible tab
 var DFROM = 0, DTO = 0;              // UTC date-range filter (yyyymmdd ints, 0 = unset)
 var CURCAT = "all";                  // active category filter
+var USERFILTER = "";                 // selected user-account filter (userDisp value; "" = all users)
 var IOCS = [];                       // lowercased IOC / keyword terms
 var SCOREMAP = {};                   // "exeL|sid" -> {tags,reasons,score,sus} (union of both aggregate sets)
 var SCOREN = 0;                      // entries in SCOREMAP (0 = scoring not built yet)
@@ -533,11 +536,11 @@ function evaluateTooling(promptIfNeeded){
     }
   }
 }
-function downloadLatest(){
+function downloadLatest(silent, done){   // silent: skip the confirms (unattended /auto); done(ok): fired after install
   var target=htaFolder()||EXE_DIR;   // always install next to the .hta (self-contained)
-  if(!target){ setStatus("Cannot determine the app folder to install into","err"); return; }
-  if(!WEB_OK && !confirm("The Zimmerman Tools site did not respond earlier (no internet?).\n\nTry downloading SrumECmd from\n"+SRUM_ZIP_URL+"\ninto\n"+target+" anyway?")) return;
-  if(WEB_OK && !confirm("Download latest SrumECmd (v"+(LATEST_VER||KNOWN_LATEST_SRUM)+") from:\n"+SRUM_ZIP_URL+"\n\nInstall next to the app into:\n"+target+"\n\nProceed?")) return;
+  if(!target){ setStatus("Cannot determine the app folder to install into","err"); if(done) done(false); return; }
+  if(!silent && !WEB_OK && !confirm("The Zimmerman Tools site did not respond earlier (no internet?).\n\nTry downloading SrumECmd from\n"+SRUM_ZIP_URL+"\ninto\n"+target+" anyway?")) return;
+  if(!silent && WEB_OK && !confirm("Download latest SrumECmd (v"+(LATEST_VER||KNOWN_LATEST_SRUM)+") from:\n"+SRUM_ZIP_URL+"\n\nInstall next to the app into:\n"+target+"\n\nProceed?")) return;
   setStatus("Downloading & installing SrumECmd… (give it a moment)","muted");
   var tq=String(target).replace(/'/g,"''");
   var ps="$ErrorActionPreference='Stop';"
@@ -557,9 +560,23 @@ function downloadLatest(){
   try{
     var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -Command "'+ps+'" > "__LOG__" 2>&1']);
     appendLog("--- SrumECmd download / install ---\n"+r.log);
-    if((r.log+"").indexOf("INSTALL_OK")>=0){ setStatus("SrumECmd installed to "+target,"ok"); evaluateTooling(false); }
-    else setStatus("Download/install failed — see log","err");
-  }catch(e){ setStatus("Download failed: "+e.message,"err"); }
+    if((r.log+"").indexOf("INSTALL_OK")>=0){ setStatus("SrumECmd installed to "+target,"ok"); evaluateTooling(false); if(done) done(true); }
+    else { setStatus("Download/install failed — see log","err"); if(done) done(false); }
+  }catch(e){ setStatus("Download failed: "+e.message,"err"); if(done) done(false); }
+}
+/* /auto launch: if the tool exe is missing, fetch it first and run in the install callback.
+   The Finder's Process / Process-all fires wrappers unattended, so a missing exe must self-resolve
+   rather than just erroring. Exe already present, or genuinely offline, falls straight through to the
+   normal run (processSrum emits the existing clear "not found" message when offline). */
+function autoProcess(){
+  if(EXE && fileExists(EXE)){ processSrum(); return; }
+  if(WEB_OK){
+    setStatus("SrumECmd.exe not present - downloading it before this auto run…","muted");
+    appendLog("/auto: SrumECmd.exe missing - fetching it before processing");
+    downloadLatest(true, function(ok){ if(ok) processSrum(); });
+    return;
+  }
+  processSrum();   // offline: let processSrum surface the existing "download it first" error
 }
 
 /* ---------- actions ---------- */
@@ -944,13 +961,15 @@ function loadCsvFile(path){
 }
 var TABLE_ORDER={networkusages:1,appresourceuseinfo:2,apptimelineprovider:3,networkconnections:4,vfuprov:5,pushnotifications:6,energyusage:7};
 function csvTab(f){ return {kind:"csv", name:tableNameOf(f.name)||f.name, path:f.path, size:f.size,
-  state:"unloaded", head:null, rows:[], blobs:[], days:[], keys:[], sortKey:-1, sortDir:1, tsIdx:-1, exeIdx:-1, sidIdx:-1, cbs:[]}; }
+  state:"unloaded", head:null, rows:[], blobs:[], days:[], keys:[], users:[], userSet:{}, hasUser:false,
+  sortKey:-1, sortDir:1, tsIdx:-1, exeIdx:-1, sidIdx:-1, sidTIdx:-1, userIdx:-1, cbs:[]}; }
 function aggTab(name, srcName, isNet){ return {kind:"agg", name:name, srcName:srcName, isNet:isNet, path:"(derived from "+srcName+")",
   size:0, state:"unloaded", rows:[], sortKey:-2, sortDir:-1}; }   // sortKey -2 = the aggregate's primary byte column, desc
 function findTab(name){ for(var i=0;i<TABS.length;i++){ if(TABS[i].name.toLowerCase()===String(name).toLowerCase()) return TABS[i]; } return null; }
 function tabIndex(t){ for(var i=0;i<TABS.length;i++){ if(TABS[i]===t) return i; } return -1; }
 function tabsFromFiles(files, openName){
   TABS=[]; CURTAB=-1; SCOREMAP={}; SCOREN=0; AGGOBJ={}; AGGWIN="?";
+  USERFILTER=""; populateUserFilter();   // new dataset — reset the user dropdown (repopulates as tables parse)
   closeDetail();
   var list=files.slice(0);
   list.sort(function(a,b){ var ta=tableNameOf(a.name).toLowerCase(), tb=tableNameOf(b.name).toLowerCase();
@@ -1031,7 +1050,10 @@ function parseTabAsync(t, cb){
     t.tsIdx=("timestamp" in hm)?hm["timestamp"]:-1;
     t.exeIdx=("exeinfo" in hm)?hm["exeinfo"]:-1;
     t.sidIdx=("sid" in hm)?hm["sid"]:-1;
-    t.rows=[]; t.blobs=[]; t.days=[]; t.keys=[];
+    t.sidTIdx=("sidtype" in hm)?hm["sidtype"]:-1;
+    t.userIdx=("username" in hm)?hm["username"]:-1;
+    t.hasUser=(t.userIdx>=0||t.sidIdx>=0);
+    t.rows=[]; t.blobs=[]; t.days=[]; t.keys=[]; t.users=[]; t.userSet={};
     var CHUNK=10000;
     function step(){
       var end=li+CHUNK; if(end>n) end=n;
@@ -1046,6 +1068,10 @@ function parseTabAsync(t, cb){
         t.blobs.push(line.toLowerCase());                                        // precomputed search blob
         t.days.push((t.tsIdx>=0&&t.tsIdx<rw.length)?dayOf(rw[t.tsIdx]):0);       // precomputed date-filter key
         t.keys.push((t.exeIdx>=0)?(((t.exeIdx<rw.length?rw[t.exeIdx]:"")+"").toLowerCase()+"|"+(t.sidIdx>=0&&t.sidIdx<rw.length?rw[t.sidIdx]:"")):"");
+        var ud="";                                                               // precomputed user-filter key (same display rule as the aggregates)
+        if(t.hasUser){ ud=userDispOf((t.sidIdx>=0&&t.sidIdx<rw.length)?rw[t.sidIdx]:"",
+          (t.userIdx>=0&&t.userIdx<rw.length)?rw[t.userIdx]:"", (t.sidTIdx>=0&&t.sidTIdx<rw.length)?rw[t.sidTIdx]:""); t.userSet[ud]=1; }
+        t.users.push(ud);
       }
       if(li<n){
         setStatus("Parsing "+t.name+"… "+nf(t.rows.length)+" rows","muted");
@@ -1054,6 +1080,7 @@ function parseTabAsync(t, cb){
       }
       lines=null;
       t.state="ready";
+      populateUserFilter();
       renderTabbar();
       setStatus("Loaded "+nf(t.rows.length)+" rows from "+t.name+PENDNOTE, PENDNOTE?"muted":"ok");
       if(CURTAB>=0 && TABS[CURTAB]===t) renderGrid();
@@ -1066,6 +1093,34 @@ function parseTabAsync(t, cb){
 /* ---------- aggregation: one row per (ExeInfo, Sid), windowed to the active date range (spec §6.1/§6.3) ---------- */
 function numv(v){ var x=parseFloat(v); return isFinite(x)?x:0; }
 function cellv(rw,i){ return (i>=0&&i<rw.length)?rw[i]:""; }
+/* one display rule for "who is this row" everywhere (aggregates, raw tabs, the user dropdown):
+   resolved UserName when SrumECmd has one, the raw SID when not, SYSTEM for S-1-5-18, "?" when the
+   row carries nothing — so the dropdown lists unresolved SIDs rather than silently dropping them */
+function userDispOf(sid,user,sidType){ return (sid==="S-1-5-18")?"SYSTEM":(user||sid||sidType||"?"); }
+/* distinct users across every READY tab: raw tabs contribute their precomputed userSet (full-run,
+   so the list stays stable when the date window shrinks the aggregates), aggregate tabs their rows */
+function collectUsers(){
+  var set={}, i, j, k, t;
+  for(i=0;i<TABS.length;i++){ t=TABS[i];
+    if(t.state!=="ready") continue;
+    if(t.kind==="agg"){ for(j=0;j<t.rows.length;j++){ var u=t.rows[j].userDisp; if(u) set[u]=1; } }
+    else if(t.hasUser){ for(k in t.userSet){ if(t.userSet.hasOwnProperty(k)) set[k]=1; } }
+  }
+  var out=[]; for(k in set){ if(set.hasOwnProperty(k)) out.push(k); }
+  out.sort(); return out;
+}
+/* (re)fill the user dropdown; keeps the current selection when that user still exists, hides the
+   control when the dataset has 0-1 distinct users (nothing to isolate) */
+function populateUserFilter(){
+  var sel=$("userSel"); if(!sel) return;
+  var vals=collectUsers(), prev=USERFILTER, found=false;
+  sel.innerHTML="";
+  var o0=document.createElement("option"); o0.value=""; o0.text="All users ("+vals.length+")"; sel.add(o0);
+  for(var i=0;i<vals.length;i++){ var o=document.createElement("option"); o.value=vals[i]; o.text=vals[i]; sel.add(o);
+    if(vals[i]===prev) found=true; }
+  if(prev&&found){ sel.value=prev; } else { USERFILTER=""; sel.value=""; }
+  showEl("userWrap", vals.length>1);
+}
 function pathLike(pL){ return /^(\\device\\|[a-z]:\\|\\\\)/.test(pL); }
 function exeBase(nameL){ return String(nameL).replace(/\.(exe|com|scr|bat|cmd)$/,""); }
 function dispNameOf(exe){ if(!exe) return "(blank ExeInfo)"; return pathLike(exe.toLowerCase())?baseName(exe):exe; }
@@ -1113,7 +1168,7 @@ function buildAgg(src, isNet){
     if(ts){ if(!o.firstTs||ts<o.firstTs){ o.firstTs=ts; o.firstDay=d; } if(ts>o.lastTs){ o.lastTs=ts; o.lastDay=d; } }
   }
   for(var i=0;i<out.length;i++){ var oo=out[i];
-    oo.userDisp=(oo.sid==="S-1-5-18")?"SYSTEM":(oo.user||oo.sid||oo.sidType||"?");
+    oo.userDisp=userDispOf(oo.sid,oo.user,oo.sidType);
     oo.ifList=joinKeys(oo.ifs); oo.profList=joinKeys(oo.profs);
     oo.blob=(oo.exeL+" "+oo.sid+" "+oo.user+" "+oo.userDisp+" "+oo.ifList+" "+oo.profList).toLowerCase();
   }
@@ -1191,6 +1246,7 @@ function rescoreAggs(){
     var rsum=buildRunSummary();
     if(rsum){ RUNINFO_LAST.patched=true; patchRunInfoSummary(rsum); }
   }
+  populateUserFilter();   // aggregates rebuilt (possibly to a new date window) — refresh the user list, keep the selection when it survives
   renderTabbar();
   renderGrid();
   if(DETKEY){ if(AGGOBJ[DETKEY]) renderDetail(DETKEY); else closeDetail(); }
@@ -1240,6 +1296,11 @@ function renderGrid(){
   if(CURTAB<0||CURTAB>=TABS.length) return;
   var t=TABS[CURTAB];
   if(t.state!=="ready") return;
+  var us=$("userSel");                       // a raw tab without UserName/Sid columns can't honor the user filter — grey the dropdown there (filter stays armed for the other tabs)
+  if(us){ var noUser=(t.kind==="csv"&&!t.hasUser);
+    us.disabled=noUser;
+    us.title=noUser?"This table has no UserName/Sid columns, so the user filter does not apply here — it still filters the other tabs."
+                   :"Filter every tab to one user account — UserName as SrumECmd resolved it, the raw SID when unresolved, SYSTEM for S-1-5-18. Applies to the summary and raw tabs alike; a tab without UserName/Sid columns ignores it (the dropdown greys out there)."; }
   if(t.kind==="agg") renderAggGrid(t); else renderCsvGrid(t);
   renderOverview();
 }
@@ -1280,6 +1341,7 @@ function renderOverview(){
   var view=[], i, o;
   for(i=0;i<ns.rows.length;i++){ o=ns.rows[i];
     if(QUERY && o.blob.indexOf(QUERY)<0) continue;
+    if(USERFILTER && o.userDisp!==USERFILTER) continue;
     if(!passCat(o,o.sid)) continue;
     view.push(o);
   }
@@ -1328,6 +1390,7 @@ function renderCsvGrid(t){
     if(DFROM&&(!t.days[i]||t.days[i]<DFROM)) continue;
     if(DTO&&(!t.days[i]||t.days[i]>DTO)) continue;
     if(q && t.blobs[i].indexOf(q)<0) continue;
+    if(USERFILTER && t.hasUser && t.users[i]!==USERFILTER) continue;
     var sc=showTags?SCOREMAP[t.keys[i]]:null;
     var sid=(t.sidIdx>=0&&t.sidIdx<t.rows[i].length)?t.rows[i][t.sidIdx]:"";
     bumpCounts(counts,sc,sid);
@@ -1353,7 +1416,9 @@ function renderCsvGrid(t){
     var rsc=showTags?SCOREMAP[t.keys[ri]]:null;
     h+='<tr data-i="'+r+'"'+((rsc&&rsc.sus)?' class="sus"':'')+' style="cursor:pointer">';
     if(showTags) h+='<td class="first">'+tagHtml(rsc)+'</td>';
-    for(var c2=0;c2<t.head.length;c2++){ var v=(c2<row.length?row[c2]:""); h+='<td class="mono" title="'+esc(v)+'">'+esc(v)+'</td>'; }
+    for(var c2=0;c2<t.head.length;c2++){ var v=(c2<row.length?row[c2]:"");
+      if(c2===t.userIdx&&t.hasUser) h+='<td class="mono lnk" data-user="'+esc(t.users[ri])+'" title="Click to filter every tab to '+esc(t.users[ri])+'">'+esc(v)+'</td>';
+      else h+='<td class="mono" title="'+esc(v)+'">'+esc(v)+'</td>'; }
     h+="</tr>"; }
   h+="</tbody>"; $("tbl").innerHTML=h;
   $("count").innerHTML=nf(idx.length)+" rows"+(shown<idx.length?(" (showing "+nf(shown)+")"):"");
@@ -1368,7 +1433,7 @@ var NCOLS=[
   {h:"Tags", sk:function(o){return -o.score;}, cell:function(o){return '<td class="first">'+tagHtml(o)+'</td>';}},
   {h:"Executable", sk:function(o){return dispNameOf(o.exe).toLowerCase();}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'"><b>'+esc(dispNameOf(o.exe))+'</b></td>';}},
   {h:"Path / info", sk:function(o){return o.exeL;}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'">'+esc(o.exe)+'</td>';}},
-  {h:"User", sk:function(o){return String(o.userDisp).toLowerCase();}, cell:function(o){return '<td class="mono'+(o.sid==="S-1-5-18"?'" style="color:#ff9b6b':'')+'" title="'+esc(o.sid)+'">'+esc(o.userDisp)+'</td>';}},
+  {h:"User", sk:function(o){return String(o.userDisp).toLowerCase();}, cell:function(o){return '<td class="mono lnk"'+(o.sid==="S-1-5-18"?' style="color:#ff9b6b"':'')+' data-user="'+esc(o.userDisp)+'" title="'+esc(o.sid?o.sid+" — ":"")+'click to filter every tab to this user">'+esc(o.userDisp)+'</td>';}},
   {h:"Sent", sk:function(o){return o.sent;}, cell:function(o){return fmtB(o.sent);}},
   {h:"Received", sk:function(o){return o.recv;}, cell:function(o){return fmtB(o.recv);}},
   {h:"Records", sk:function(o){return o.n;}, cell:function(o){return '<td class="mono" style="text-align:right">'+esc(nf(o.n))+'</td>';}},
@@ -1381,7 +1446,7 @@ var ACOLS=[
   {h:"Tags", sk:function(o){return -o.score;}, cell:function(o){return '<td class="first">'+tagHtml(o)+'</td>';}},
   {h:"Executable", sk:function(o){return dispNameOf(o.exe).toLowerCase();}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'"><b>'+esc(dispNameOf(o.exe))+'</b></td>';}},
   {h:"Path / info", sk:function(o){return o.exeL;}, cell:function(o){return '<td class="mono" title="'+esc(o.exe)+'">'+esc(o.exe)+'</td>';}},
-  {h:"User", sk:function(o){return String(o.userDisp).toLowerCase();}, cell:function(o){return '<td class="mono'+(o.sid==="S-1-5-18"?'" style="color:#ff9b6b':'')+'" title="'+esc(o.sid)+'">'+esc(o.userDisp)+'</td>';}},
+  {h:"User", sk:function(o){return String(o.userDisp).toLowerCase();}, cell:function(o){return '<td class="mono lnk"'+(o.sid==="S-1-5-18"?' style="color:#ff9b6b"':'')+' data-user="'+esc(o.userDisp)+'" title="'+esc(o.sid?o.sid+" — ":"")+'click to filter every tab to this user">'+esc(o.userDisp)+'</td>';}},
   {h:"Bytes read", sk:function(o){return o.read;}, cell:function(o){return fmtB(o.read);}},
   {h:"Bytes written", sk:function(o){return o.written;}, cell:function(o){return fmtB(o.written);}},
   {h:"Records", sk:function(o){return o.n;}, cell:function(o){return '<td class="mono" style="text-align:right">'+esc(nf(o.n))+'</td>';}},
@@ -1397,6 +1462,7 @@ function renderAggGrid(t){
   var view=[], q=QUERY, i;
   for(i=0;i<t.rows.length;i++){ var o=t.rows[i];
     if(q && o.blob.indexOf(q)<0) continue;
+    if(USERFILTER && o.userDisp!==USERFILTER) continue;
     bumpCounts(counts,o,o.sid);
     if(!passCat(o,o.sid)) continue;
     view.push(o);
@@ -1765,11 +1831,13 @@ function init(){
 
   $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer);
     qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); renderGrid(); },150); };
+  $("userSel").onchange=function(){ USERFILTER=this.value; renderGrid(); };
   // date change re-aggregates the summary tabs to the window (rebuildAggs re-renders); csv tabs just re-filter
   $("dfrom").onchange=function(){ DFROM=dayNum(this.value); rebuildAggs(); renderGrid(); };
   $("dto").onchange=function(){ DTO=dayNum(this.value); rebuildAggs(); renderGrid(); };
   $("clearBtn").onclick=function(){ $("q").value=""; $("dfrom").value=""; $("dto").value="";
-    QUERY=""; DFROM=0; DTO=0; CURCAT="all"; rebuildAggs(); renderGrid(); };
+    QUERY=""; DFROM=0; DTO=0; CURCAT="all"; USERFILTER=""; try{ $("userSel").value=""; }catch(ec){}
+    rebuildAggs(); renderGrid(); };
 
   var catBtns=$("cats").getElementsByTagName("button");
   for(var cb=0;cb<catBtns.length;cb++){ if(catBtns[cb].getAttribute("data-cat")){ catBtns[cb].onclick=function(){
@@ -1789,6 +1857,8 @@ function init(){
   /* click delegation: overview data-q → jump to Network Summary filtered; any grid row → aggregate detail */
   document.onclick=function(ev){ ev=ev||window.event; var tg=ev.target||ev.srcElement;
     if(tg && /\bcgrip\b/.test(tg.className+"")) return;   // column-resize grips never bubble into row actions
+    var du=tg&&tg.getAttribute?tg.getAttribute("data-user"):null;
+    if(du!=null&&du!==""){ USERFILTER=du; try{ $("userSel").value=du; }catch(eu){} renderGrid(); return; }   // user-cell click = sticky filter, not detail
     var q=tg&&tg.getAttribute?tg.getAttribute("data-q"):null;
     if(q){
       var ns=findTab("Network Summary");
@@ -1883,7 +1953,7 @@ function applyCli(cli){ if(!cli.input) return false;
   else { setStatus("CLI input not found: "+cli.input,"err"); appendLog("CLI input not found: "+cli.input); return false; }
   if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; hostGuessFrom(cli.outDir); }
   else hostGuessFrom(cli.input);
-  if(cli.auto){ appendLog("CLI: /auto — processing "+cli.input); window.setTimeout(function(){ processSrum(); },200); }
+  if(cli.auto){ appendLog("CLI: /auto — processing "+cli.input); window.setTimeout(function(){ autoProcess(); },200); }
   else setStatus("CLI: input prefilled — click 'Process → analyze' to run.","muted");
   return true; }
 
@@ -2011,6 +2081,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li>Pressing <b>Process</b> when <code>SrumECmd.exe</code> isn't present offers to download it first, then continues straight into the run.</li>
       <li>Produced CSVs carry the <b>target hostname</b> in the filename (<code>&lt;ts&gt;_&lt;host&gt;_SrumECmd_&lt;Table&gt;_Output.csv</code>); filtered/hourly exports are prefixed with it too.</li>
       <li>Network-summary and data-transfer views, IOC/keyword list, and a detail pane are built in. All timestamps UTC.</li>
+      <li><b>User filter</b>: the <code>user:</code> dropdown (or clicking any User cell) isolates one account across every tab — UserName as SrumECmd resolved it, the raw SID when unresolved, SYSTEM for S-1-5-18. It appears only when the dataset has more than one distinct account, and greys out on tables without UserName/Sid columns. Exports honor it like every other filter.</li>
       <li>Drag a column header's right edge to resize it (widths persist per view); double-click the edge to reset all widths.</li>
       <li>SRUM is parsed through the host's local ESE engine — a <code>SRUDB.dat</code> newer than the analysis host's Windows build must be parsed on an equal-or-newer Windows.</li>
     </ul>
