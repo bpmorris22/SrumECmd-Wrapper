@@ -129,6 +129,7 @@
   .modal code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}
   .modal .x{float:right;cursor:pointer;color:#8b949e;font-size:22px;line-height:1}.modal .x:hover{color:#e6edf3}
   .modal .gh{font-family:Consolas,monospace;font-size:12px}
+  .maxwarn{display:inline-block;color:#e3b341;font-weight:600;cursor:help;border:1px solid #8a7a2a;background:#2a2410;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -253,7 +254,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.10.1";
+var APP_VERSION = "1.10.2";
 var KNOWN_LATEST_SRUM = "2026.5.0";                                                 // baseline as of 2026-07-02
 var SRUM_ZIP_URL = "https://download.ericzimmermanstools.com/net9/SrumECmd.zip";    // official EZ mirror (.NET 9 build)
 var EZ_PAGE = "https://ericzimmerman.github.io/";                                   // for live latest-version lookup
@@ -265,6 +266,17 @@ var LATEST_VER = "";
 var WEB_OK = false;                  // could we reach the Zimmerman Tools site to check latest?
 var QUERY = "";
 var MAXROWS = 6000;
+/* Row-limit disclosure (family-wide wave): a capped table that merely says "(showing N)" reads
+   as complete to anyone who does not know the cap exists. One consistent amber chip wherever
+   the render cap bites, with the remedy in the tooltip. The cap keeps mshta responsive; the
+   DATA is intact - exports always write the FULL filtered set. */
+function maxRowsWarn(shown, total, extra){
+  if(!(total>shown)) return "";
+  return ' <span class="maxwarn" title="'+esc("Drawing the first "+nf(shown)+" of "+nf(total)+" matching rows - the render cap keeps the app responsive; it does NOT mean the rest were discarded. Narrow the view (search box, filters, case date window) to bring what you need inside the cap, or use Export view -> CSV: exports always write the FULL filtered set."+(extra?(" "+extra):""))+'">&#9888; Warning: Maximum Rows Exceeded</span>';
+}
+function copyCapNote(arr){ var total=(arr||[]).length;
+  return total>500 ? (" - first 500 of "+nf(total)+" (clipboard cap); Export view -> CSV writes the full set") : "";
+}
 var LASTOUTDIR = "";
 var qTimer = null;
 var TABS = [];                       // per tab: kind "csv" {name,path,size,state,head,rows,blobs,days,keys,...} or "agg" {name,srcName,isNet,rows:[objects],...}
@@ -1421,7 +1433,7 @@ function renderCsvGrid(t){
       else h+='<td class="mono" title="'+esc(v)+'">'+esc(v)+'</td>'; }
     h+="</tr>"; }
   h+="</tbody>"; $("tbl").innerHTML=h;
-  $("count").innerHTML=nf(idx.length)+" rows"+(shown<idx.length?(" (showing "+nf(shown)+")"):"");
+  $("count").innerHTML=nf(idx.length)+" rows"+(shown<idx.length?(" (showing "+nf(shown)+")"):"")+maxRowsWarn(shown,idx.length);
   wireSort(t);
   setupColResize();
   applyFreeze();
@@ -1483,7 +1495,7 @@ function renderAggGrid(t){
   h+="</tbody>"; $("tbl").innerHTML=h;
   var volNote=t.isNet?(fmtSize(sumField(view,"sent"))+" sent / "+fmtSize(sumField(view,"recv"))+" recv in view"):
                       (fmtSize(sumField(view,"read"))+" read / "+fmtSize(sumField(view,"written"))+" written in view");
-  $("count").innerHTML=nf(view.length)+" aggregates"+(shown<view.length?(" (showing "+nf(shown)+")"):"")+" · "+volNote+((DFROM||DTO)?" (date-windowed)":"");
+  $("count").innerHTML=nf(view.length)+" aggregates"+(shown<view.length?(" (showing "+nf(shown)+")"):"")+maxRowsWarn(shown,view.length)+" · "+volNote+((DFROM||DTO)?" (date-windowed)":"");
   wireSort(t);
   setupColResize();
   applyFreeze();
@@ -1651,7 +1663,7 @@ function copyNotes(){
         +o.firstTs+" -> "+o.lastTs+" UTC | "+o.userDisp
         +(o.tags.length?(" | tags: "+o.tags.join(" ")+" (score "+o.score+")"):""));
     }
-    try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+out.length+" case-note lines","ok"); }
+    try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+out.length+" case-note lines"+copyCapNote(window.__viewAgg),"ok"); }
     catch(e1){ setStatus("Copy failed: "+e1.message,"err"); }
     return;
   }
@@ -1659,7 +1671,7 @@ function copyNotes(){
   if(!t.head||!idx.length){ setStatus("Nothing to copy","err"); return; }
   out.push(t.head.join("\t"));
   for(i=0;i<idx.length;i++) out.push(t.rows[idx[i]].join("\t"));
-  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+idx.length+" rows (TSV)","ok"); }
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+idx.length+" rows (TSV)"+copyCapNote(window.__viewIdx),"ok"); }
   catch(e2){ setStatus("Copy failed: "+e2.message,"err"); }
 }
 
